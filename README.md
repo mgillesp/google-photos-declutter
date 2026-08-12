@@ -69,12 +69,24 @@ python3 scripts/01_analyze.py batches/2019-05
 Produces `batches/2019-05/review.html` and `batches/2019-05/decisions.csv`.
 
 ### 3. [YOU / Kathryn] Review and mark decisions
-- Open `review.html` in a browser (fully offline; thumbnails are embedded).
+- Open `review.html` in a browser (fully offline; thumbnails are embedded) — great
+  for reviewing together.
 - It groups: **exact duplicates · similar images · bursts · blur candidates ·
-  oversized videos · junk candidates**.
-- In `decisions.csv`, set the `decision` column to `delete` for anything you want
-  gone. **Leave it blank to keep** (conservative default — nothing is deleted unless
-  you explicitly write `delete`).
+  oversized videos · junk candidates**. **Tap a photo** to toggle keep (✓ green) /
+  delete (✕ red). Duplicate/similar/burst groups start with the sharpest shot
+  pre-selected to keep — tap another if you'd rather keep a different one (or tap
+  more than one to keep several). Tap the 🔍 icon on a card for a larger view.
+  **Anything not shown on the page is unflagged and stays kept automatically** —
+  you only need to review what's there.
+- When done, click **⬇ Download decisions.csv** in the toolbar, then move the
+  downloaded file into this batch's folder, overwriting the one `01_analyze.py`
+  generated:
+  ```bash
+  mv ~/Downloads/decisions.csv batches/2019-05/decisions.csv
+  ```
+- Prefer editing the CSV by hand instead? `decisions.csv` is pre-filled with the
+  same suggested defaults the page starts from — set `decision` to `delete` for
+  anything you want gone, leave it blank to keep.
 
 ### 4. [SCRIPT] Restore capture dates onto keepers
 ```bash
