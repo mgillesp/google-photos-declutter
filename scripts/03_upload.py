@@ -130,6 +130,41 @@ def batch_create(session, token: str, items: list[tuple[str, str]]) -> list[dict
     return resp.json().get("newMediaItemResults", [])
 
 
+def confirm_trashed(batch_dir: Path, confirm_flag: bool) -> bool:
+    """Gate re-upload on having already trashed this month's originals.
+
+    Uploading before trashing creates duplicates in the library instead of a
+    clean re-sort -- exactly the opposite of decluttering. A marker file
+    remembers a prior confirmation so retries/resumes for the same batch
+    (e.g. after a 7-day re-auth) don't have to re-confirm every time.
+    """
+    marker = batch_dir / ".trashed_confirmed"
+    if marker.exists():
+        return True
+    if confirm_flag:
+        marker.write_text("confirmed via --confirm-trashed\n")
+        return True
+    if not sys.stdin.isatty():
+        print("ERROR: re-upload hasn't been confirmed yet and this doesn't look "
+              "like an interactive session. Re-run with --confirm-trashed once "
+              "you've moved this month's originals to Trash in Google Photos.",
+              file=sys.stderr)
+        return False
+
+    print()
+    print("Before re-uploading: have you ALREADY moved this month's original")
+    print("photos to Trash in Google Photos (search the month, select all,")
+    print("move to trash)? If you upload before trashing, you'll end up with")
+    print("duplicates in the library instead of a clean re-sort.")
+    print()
+    answer = input('Type "yes" to confirm you have trashed them, or anything '
+                    'else to abort: ').strip().lower()
+    if answer == "yes":
+        marker.write_text("confirmed interactively\n")
+        return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -137,6 +172,10 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="List what would be uploaded without authenticating/uploading")
+    ap.add_argument("--confirm-trashed", action="store_true",
+                    help="Skip the interactive trash-confirmation prompt (for a "
+                    "resumed/retry run once you've already confirmed once for "
+                    "this batch)")
     args = ap.parse_args()
 
     import requests
@@ -174,6 +213,11 @@ def main() -> int:
     if not pending:
         print("Nothing to do — all files already uploaded.")
         return 0
+
+    if not confirm_trashed(batch_dir, args.confirm_trashed):
+        print("\nAborted: re-upload not started. Trash this month's originals "
+              "in Google Photos first, then re-run this script.", file=sys.stderr)
+        return 1
 
     cfg = load_config(args.config)
     creds = get_credentials(cfg)

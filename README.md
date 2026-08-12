@@ -106,6 +106,13 @@ python3 scripts/03_upload.py batches/2019-05              # add --dry-run to pre
 Uploads keepers via the Photos API. Because dates are baked in, they slot back into
 the right place in your timeline. Idempotent + resumable (`upload_log.json`).
 
+Before uploading anything for real, it asks you to confirm you've **already**
+completed step 5 (trashed the originals) — uploading before trashing would create
+duplicates instead of a clean re-sort. Type `yes` to proceed. This is only asked
+once per batch (a marker file remembers it), so retries/resumes (e.g. after a
+7-day re-auth) won't ask again. `--dry-run` skips the prompt entirely since it
+makes no real changes.
+
 > First run opens a browser for Google authorization (Testing-mode consent, ~30s).
 > If it's been >7 days since your last upload, it re-prompts automatically — expected,
 > not an error. See `docs/GOOGLE_CLOUD_SETUP.md`.
