@@ -33,6 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from lib import media  # noqa: E402
 from lib.config import load_config  # noqa: E402
 from lib.sidecars import VIDEO_EXTS, build_index  # noqa: E402
 
@@ -112,7 +113,7 @@ def main() -> int:
         dest = reupload / rel
         is_video = src.suffix.lower() in VIDEO_EXTS
 
-        dt = index.capture_dt(src)
+        dt = index.capture_dt(src) or media.exif_datetime(src)
         if args.dry_run:
             tag = dt.date().isoformat() if dt else "NO DATE"
             print(f"  keep  {rel}  [{tag}]")

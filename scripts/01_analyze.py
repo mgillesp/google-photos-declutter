@@ -250,25 +250,37 @@ def main() -> int:
 
     # Per-file record
     records: dict[str, dict] = {}
+    exif_fallback_used = 0
     for p in media_files:
         rel = p.relative_to(takeout)
-        epoch = index.lookup(p)
         dt = index.capture_dt(p)
+        date_source = "sidecar" if dt else None
+        if dt is None:
+            dt = media.exif_datetime(p)  # e.g. direct "Download" with no sidecars
+            if dt is not None:
+                date_source = "exif"
+                exif_fallback_used += 1
+        epoch = int(dt.timestamp()) if dt else None
         records[str(p)] = {
             "path": p,
             "rel": str(rel),
             "name": p.name,
             "is_video": p.suffix.lower() in VIDEO_EXTS,
             "epoch": epoch,
+            "date_source": date_source or "",
             "capture_date": dt.date().isoformat() if dt else "",
             "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
             "blur": None,
             "flags": set(),
         }
 
+    if exif_fallback_used:
+        print(f"    NOTE: {exif_fallback_used} files had no sidecar match; "
+              "used their own embedded EXIF date instead.")
     unresolved = sum(1 for r in records.values() if r["epoch"] is None)
     if unresolved:
-        print(f"    NOTE: {unresolved} files had no resolvable capture date from sidecars.")
+        print(f"    NOTE: {unresolved} files had NO resolvable capture date "
+              "(no sidecar, no EXIF).")
 
     # 2) czkawka exact duplicates + near-duplicate images
     print("  - running czkawka duplicate detection...")
@@ -374,13 +386,13 @@ def write_decisions_csv(path: Path, records: dict[str, dict]) -> None:
     rows = sorted(records.values(), key=lambda r: (r["capture_date"], r["rel"]))
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["rel_path", "filename", "capture_date", "size_mb", "is_video",
-                    "blur_score", "flags", "suggested", "decision"])
+        w.writerow(["rel_path", "filename", "capture_date", "date_source", "size_mb",
+                    "is_video", "blur_score", "flags", "suggested", "decision"])
         for r in rows:
             flags = ";".join(sorted(r["flags"]))
             suggested = "review" if r["flags"] else "keep"
-            w.writerow([r["rel"], r["name"], r["capture_date"], r["size_mb"],
-                        "yes" if r["is_video"] else "no",
+            w.writerow([r["rel"], r["name"], r["capture_date"], r["date_source"],
+                        r["size_mb"], "yes" if r["is_video"] else "no",
                         "" if r["blur"] is None else r["blur"],
                         flags, suggested, ""])
 

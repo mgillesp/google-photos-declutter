@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -93,3 +95,34 @@ def video_thumb_data_uri(path: Path, max_px: int) -> str | None:
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def exif_datetime(path: Path) -> datetime | None:
+    """Fallback capture date read straight from the file's own EXIF/QuickTime tags.
+
+    Used when a Takeout JSON sidecar isn't available (e.g. a plain "Download"
+    from the Photos web UI instead of a Takeout export) but the file already
+    carries a real camera/phone timestamp. Sidecars remain the authoritative
+    source when present -- callers should try index.capture_dt() first.
+    """
+    if not shutil.which("exiftool"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["exiftool", "-j", "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
+             str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        rows = json.loads(proc.stdout)
+        data = rows[0] if rows else {}
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError, IndexError):
+        return None
+    for tag in ("DateTimeOriginal", "CreateDate", "MediaCreateDate"):
+        val = data.get(tag)
+        if not isinstance(val, str) or len(val) < 19:
+            continue
+        try:
+            return datetime.strptime(val[:19], "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
