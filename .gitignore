@@ -1,0 +1,68 @@
+# ============================================================================
+#  SAFETY-CRITICAL: never commit photos, personal data, or credentials.
+#  This file is intentionally aggressive. When in doubt, it stays out of git.
+# ============================================================================
+
+# --- Per-batch working data (photos, review sheets, decisions) ---
+batches/
+takeout/
+reupload/
+*.zip
+
+# --- Media files (belt-and-suspenders in case anything lands outside batches/) ---
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.heic
+*.heif
+*.dng
+*.raw
+*.cr2
+*.nef
+*.mp4
+*.mov
+*.m4v
+*.avi
+*.mkv
+*.webm
+*.3gp
+
+# --- Generated review artifacts ---
+review.html
+decisions*.csv
+upload_log.json
+
+# --- Credentials / tokens / secrets (these live under ~/.config, never here) ---
+client_secret*.json
+client_secrets*.json
+credentials.json
+token*.json
+*.pem
+.env
+.env.*
+credentials/
+
+# --- Local config copies (ship only config.example.yaml) ---
+config.yaml
+config.yml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- OS / editor cruft ---
+.DS_Store
+.idea/
+.vscode/
+*.swp

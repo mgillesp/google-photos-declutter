@@ -1,0 +1,52 @@
+# Copy this to config.yaml and tweak. config.yaml is gitignored.
+# All scripts fall back to these defaults if no config.yaml is present.
+
+analysis:
+  # --- Blur detection (OpenCV Laplacian variance) ---
+  # Lower variance = blurrier. Images below this are flagged as blur candidates.
+  # Typical sharp photos score 100s-1000s; heavy blur scores < 50. Tune after a
+  # first batch: if too many good photos get flagged, lower this.
+  blur_variance_threshold: 60.0
+
+  # --- Burst / near-in-time clustering ---
+  # Photos whose capture times fall within this many seconds of each other are
+  # grouped as a likely burst (candidates to keep just the best 1-2 of).
+  burst_window_seconds: 3
+
+  # --- czkawka near-duplicate similarity (image pass) ---
+  # Max perceptual-hash difference (0-40) for two images to count as "similar".
+  # LOWER = stricter / fewer, closer matches. 0 = only near-identical.
+  # 10 is a conservative default; raise toward 15-20 to catch looser near-dupes.
+  czkawka_max_difference: 10
+
+  # --- Oversized video flagging (ffprobe) ---
+  video_max_mb: 200            # videos larger than this are flagged to move elsewhere
+  video_max_seconds: 0         # optional: also flag if longer than N seconds (0 = ignore)
+
+  # --- Thumbnails embedded in review.html ---
+  thumbnail_max_px: 320        # longest edge of each thumbnail (kept small so the HTML
+                               # stays reasonable even with hundreds of items)
+
+  # --- Optional local Ollama vision pass (only used with --ollama) ---
+  ollama:
+    host: http://localhost:11434
+    model: moondream           # small local vision model; llava also works
+    # Files flagged if the model calls them one of these (screenshots/junk):
+    # This never leaves your machine.
+
+# scripts/02_restore_exif.py
+exif:
+  # Which EXIF/QuickTime date tags to (re)write from the Takeout sidecar timestamp.
+  # DateTimeOriginal is what Google Photos sorts by for images.
+  write_tags:
+    - DateTimeOriginal
+    - CreateDate
+    - ModifyDate
+
+# scripts/03_upload.py
+upload:
+  # Where OAuth client secret + cached token live (NEVER in the repo).
+  client_secret_path: ~/.config/gphotos-declutter/client_secret.json
+  token_path: ~/.config/gphotos-declutter/token.json
+  scope: https://www.googleapis.com/auth/photoslibrary.appendonly
+  batch_size: 50               # mediaItems.batchCreate accepts up to 50 per call

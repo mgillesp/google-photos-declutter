@@ -1,0 +1,17 @@
+# Local analysis
+opencv-python-headless>=4.9    # Laplacian-variance blur scoring (headless: no GUI libs needed)
+numpy>=1.26
+pillow>=10.2                   # thumbnails, image loading
+pillow-heif>=0.15             # HEIC/HEIF support (iPhone originals) for Pillow + OpenCV decode
+
+# Config
+pyyaml>=6.0
+
+# Google Photos Library API re-upload (scripts/03_upload.py)
+google-auth>=2.28
+google-auth-oauthlib>=1.2
+requests>=2.31
+
+# NOTE: external CLI tools are installed via Homebrew, not pip:
+#   brew install czkawka exiftool ffmpeg
+# (czkawka_cli = dup/near-dup detection, exiftool = EXIF write, ffprobe = video probe)
