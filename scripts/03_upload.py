@@ -199,19 +199,30 @@ def main() -> int:
             continue
         results = batch_create(session, creds.token,
                                [(ut, fn) for ut, fn, _ in tokens])
-        # Map results back to files by position (API preserves order).
-        for (ut, fn, path), res in zip(tokens, results):
-            rel = str(path.relative_to(reupload))
-            status = (res.get("status") or {})
-            if status.get("message", "").lower() in ("success", "ok") or \
-                    res.get("mediaItem"):
-                uploaded += 1
-                log[rel] = {"status": "uploaded",
-                            "mediaItemId": res.get("mediaItem", {}).get("id")}
-            else:
+        if len(results) != len(tokens):
+            # Whole batchCreate request failed (e.g. non-200) or returned a
+            # mismatched result count -- don't silently drop these from the
+            # failed count, mark every item in this chunk as failed.
+            for ut, fn, path in tokens:
                 failed += 1
-                log[rel] = {"status": "create_failed", "detail": status}
-                print(f"    ! create failed for {fn}: {status}", file=sys.stderr)
+                log[str(path.relative_to(reupload))] = {
+                    "status": "create_failed",
+                    "detail": "batchCreate request failed or returned no result",
+                }
+        else:
+            # Map results back to files by position (API preserves order).
+            for (ut, fn, path), res in zip(tokens, results):
+                rel = str(path.relative_to(reupload))
+                status = (res.get("status") or {})
+                if status.get("message", "").lower() in ("success", "ok") or \
+                        res.get("mediaItem"):
+                    uploaded += 1
+                    log[rel] = {"status": "uploaded",
+                                "mediaItemId": res.get("mediaItem", {}).get("id")}
+                else:
+                    failed += 1
+                    log[rel] = {"status": "create_failed", "detail": status}
+                    print(f"    ! create failed for {fn}: {status}", file=sys.stderr)
         # Persist after each chunk so an interruption doesn't lose progress.
         log_path.write_text(json.dumps(log, indent=2))
 
