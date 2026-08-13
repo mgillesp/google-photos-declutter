@@ -159,3 +159,44 @@ def text_word_count(path: Path, max_px: int = 1000) -> int | None:
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+_FORMAT_EXTS = {
+    "JPEG": {".jpg", ".jpeg"},
+    "PNG": {".png"},
+    "GIF": {".gif"},
+    "BMP": {".bmp"},
+    "TIFF": {".tiff", ".tif"},
+    "WEBP": {".webp"},
+    "HEIF": {".heic", ".heif"},
+}
+_CANONICAL_EXT = {"JPEG": ".jpg", "PNG": ".png", "GIF": ".gif", "BMP": ".bmp",
+                  "TIFF": ".tiff", "WEBP": ".webp", "HEIF": ".heic"}
+
+
+def fix_mislabeled_extension(path: Path) -> Path:
+    """Rename a file if its real image format doesn't match its extension.
+
+    Older exports (e.g. Google Hangouts screenshots) sometimes save JPEG
+    bytes with a .png filename. Left alone this breaks two things
+    downstream: exiftool refuses to write EXIF-style date tags into a file
+    whose declared type doesn't match its content, and the upload step
+    infers the wrong MIME type from the filename. Detects the real format
+    from content (not the extension) and renames to match. Returns the
+    (possibly unchanged) path.
+    """
+    try:
+        with Image.open(path) as im:
+            fmt = im.format
+    except Exception:
+        return path
+    valid_exts = _FORMAT_EXTS.get(fmt)
+    if not valid_exts or path.suffix.lower() in valid_exts:
+        return path
+    new_path = path.with_suffix(_CANONICAL_EXT[fmt])
+    n = 1
+    while new_path.exists():
+        new_path = path.with_name(f"{path.stem}_{n}{_CANONICAL_EXT[fmt]}")
+        n += 1
+    path.rename(new_path)
+    return new_path

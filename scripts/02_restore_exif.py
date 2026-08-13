@@ -103,6 +103,7 @@ def main() -> int:
     dated = 0
     unresolved: list[str] = []
     failed: list[str] = []
+    mislabeled: list[str] = []
 
     for r in keep_rows:
         rel = r["rel_path"]
@@ -126,6 +127,12 @@ def main() -> int:
         shutil.copy2(src, dest)
         copied += 1
 
+        if not is_video:
+            fixed = media.fix_mislabeled_extension(dest)
+            if fixed != dest:
+                mislabeled.append(f"{rel} -> {fixed.name}")
+                dest = fixed
+
         if not dt:
             unresolved.append(rel)
             continue
@@ -143,6 +150,14 @@ def main() -> int:
     print(f"  copied to reupload/ : {copied}")
     if not args.dry_run:
         print(f"  dates written       : {dated}")
+    if mislabeled:
+        print(f"  extension corrected : {len(mislabeled)} (real format didn't match "
+              "filename extension -- renamed so date-writing and upload MIME "
+              "type are both correct):")
+        for u in mislabeled[:20]:
+            print(f"      - {u}")
+        if len(mislabeled) > 20:
+            print(f"      ... and {len(mislabeled) - 20} more")
     if unresolved:
         print(f"  NO sidecar date     : {len(unresolved)} (copied but NOT re-dated — "
               "these may land at upload time in the timeline):")
