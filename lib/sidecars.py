@@ -77,14 +77,25 @@ def _title_candidates(media_name: str) -> list[str]:
     cands = [media_name]
     stem, dot, ext = media_name.rpartition(".")
     if dot:
-        # Strip Google's "-edited" style suffixes: IMG_1234-edited.JPG -> IMG_1234.JPG
-        base = _EDITED_SUFFIX.sub("", stem)
-        if base != stem:
-            cands.append(f"{base}.{ext}")
-        # Strip a trailing "(1)" duplicate index: IMG_1234(1).JPG -> IMG_1234.JPG
-        m = re.match(r"^(.*)\(\d+\)$", base)
-        if m:
-            cands.append(f"{m.group(1)}.{ext}")
+        # Iteratively strip Google's "-edited" suffix and a trailing "(n)"
+        # duplicate index, in either order/combination, so a COMPOUND suffix
+        # like "-edited(1)" fully reduces to the original base name instead
+        # of stopping after only one stripping pass:
+        #   IMG_1234-edited(1) -> IMG_1234-edited -> IMG_1234
+        base = stem
+        changed = True
+        while changed:
+            changed = False
+            new_base = _EDITED_SUFFIX.sub("", base)
+            if new_base != base:
+                base = new_base
+                cands.append(f"{base}.{ext}")
+                changed = True
+            m = re.match(r"^(.*)\(\d+\)$", base)
+            if m and m.group(1) != base:
+                base = m.group(1)
+                cands.append(f"{base}.{ext}")
+                changed = True
     # De-dupe preserving order
     seen: set[str] = set()
     out = []
