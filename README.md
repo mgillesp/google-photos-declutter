@@ -125,6 +125,23 @@ makes no real changes.
 > If it's been >7 days since your last upload, it re-prompts automatically — expected,
 > not an error. See `docs/GOOGLE_CLOUD_SETUP.md`.
 
+### 7. [SCRIPT] Clean up local disk space
+```bash
+python3 scripts/04_cleanup.py batches/2019-05 --dry-run     # preview first
+python3 scripts/04_cleanup.py batches/2019-05               # asks to confirm
+```
+Once a batch is fully uploaded, its local Takeout zip(s), extracted originals,
+`reupload/`, and `review.html` (which embeds a real thumbnail of every flagged
+photo, so it counts as media too) are no longer needed — everything's safely in
+Google Photos, with the trashed originals in Google's 60-day recovery window as a
+second safety net. This deletes all of that and keeps only `decisions.csv` and
+`upload_log.json` — the actual record of what was reviewed and uploaded.
+
+**Refuses to delete anything unless every kept file in `decisions.csv` is
+confirmed uploaded** (cross-checked against `upload_log.json` with a real
+`mediaItemId`) — if even one keeper is missing or failed, cleanup aborts with a
+list of what's wrong instead of touching any files.
+
 ---
 
 ## Repo layout
@@ -132,6 +149,7 @@ makes no real changes.
 scripts/01_analyze.py       analysis + offline review-sheet generator
 scripts/02_restore_exif.py  copy keepers + bake in correct capture dates
 scripts/03_upload.py        OAuth + Photos API re-upload (no browser automation)
+scripts/04_cleanup.py       delete local media once a batch is fully uploaded
 lib/                        shared helpers (sidecar matching, HEIC media, config)
 config.example.yaml         tunable thresholds (blur, video size, similarity, ...)
 docs/GOOGLE_CLOUD_SETUP.md  one-time Google Cloud / OAuth click-through
