@@ -30,7 +30,10 @@ import argparse
 import json
 import mimetypes
 import sys
+import time
 from pathlib import Path
+
+import requests
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -100,6 +103,12 @@ def _save_token(token_path: Path, creds) -> None:
 
 
 def upload_bytes(session, token: str, path: Path) -> str | None:
+    """Upload one file's bytes, returning its upload token (or None on failure).
+
+    A dropped connection/SSL error (Wi-Fi blip, laptop sleep, etc.) is retried
+    once after a short pause instead of crashing the whole run -- past that,
+    the file is reported as failed and the run continues with the rest.
+    """
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -107,27 +116,55 @@ def upload_bytes(session, token: str, path: Path) -> str | None:
         "X-Goog-Upload-Content-Type": mime,
         "X-Goog-Upload-Protocol": "raw",
     }
-    with open(path, "rb") as f:
-        resp = session.post(UPLOAD_URL, data=f, headers=headers, timeout=300)
-    if resp.status_code == 200 and resp.text:
-        return resp.text
-    print(f"    ! upload failed for {path.name}: {resp.status_code} "
-          f"{resp.text[:160]}", file=sys.stderr)
+    for attempt in (1, 2):
+        try:
+            with open(path, "rb") as f:
+                resp = session.post(UPLOAD_URL, data=f, headers=headers, timeout=300)
+        except requests.exceptions.RequestException as e:
+            if attempt == 1:
+                print(f"    ! network error uploading {path.name}, retrying once: {e}",
+                      file=sys.stderr)
+                time.sleep(3)
+                continue
+            print(f"    ! upload failed for {path.name} after retry: {e}",
+                  file=sys.stderr)
+            return None
+        if resp.status_code == 200 and resp.text:
+            return resp.text
+        print(f"    ! upload failed for {path.name}: {resp.status_code} "
+              f"{resp.text[:160]}", file=sys.stderr)
+        return None
     return None
 
 
 def batch_create(session, token: str, items: list[tuple[str, str]]) -> list[dict]:
-    """items: list of (upload_token, filename). Returns per-item result dicts."""
+    """items: list of (upload_token, filename). Returns per-item result dicts.
+
+    Same network-error retry as upload_bytes -- a dropped connection here
+    would otherwise crash the run even though the file bytes already made it
+    to Google (just not yet turned into library items).
+    """
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"newMediaItems": [
         {"simpleMediaItem": {"uploadToken": ut, "fileName": fn}} for ut, fn in items
     ]}
-    resp = session.post(BATCH_URL, headers=headers, json=body, timeout=120)
-    if resp.status_code != 200:
-        print(f"    ! batchCreate failed: {resp.status_code} {resp.text[:200]}",
-              file=sys.stderr)
-        return []
-    return resp.json().get("newMediaItemResults", [])
+    for attempt in (1, 2):
+        try:
+            resp = session.post(BATCH_URL, headers=headers, json=body, timeout=120)
+        except requests.exceptions.RequestException as e:
+            if attempt == 1:
+                print(f"    ! network error on batchCreate, retrying once: {e}",
+                      file=sys.stderr)
+                time.sleep(3)
+                continue
+            print(f"    ! batchCreate failed after retry: {e}", file=sys.stderr)
+            return []
+        if resp.status_code != 200:
+            print(f"    ! batchCreate failed: {resp.status_code} {resp.text[:200]}",
+                  file=sys.stderr)
+            return []
+        return resp.json().get("newMediaItemResults", [])
+    return []
 
 
 def confirm_trashed(batch_dir: Path, confirm_flag: bool) -> bool:
@@ -177,8 +214,6 @@ def main() -> int:
                     "resumed/retry run once you've already confirmed once for "
                     "this batch)")
     args = ap.parse_args()
-
-    import requests
 
     batch_dir = args.batch.resolve()
     reupload = batch_dir / "reupload"
