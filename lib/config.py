@@ -24,6 +24,7 @@ DEFAULTS: dict = {
         "video_max_mb": 200,
         "video_max_seconds": 0,
         "thumbnail_max_px": 320,
+        "text_word_threshold": 25,
         "ollama": {
             "host": "http://localhost:11434",
             "model": "moondream",

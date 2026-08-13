@@ -27,6 +27,14 @@ analysis:
   thumbnail_max_px: 320        # longest edge of each thumbnail (kept small so the HTML
                                # stays reasonable even with hundreds of items)
 
+  # --- Text/document detection (local OCR via tesseract) ---
+  # Images with at least this many recognizable words get flagged as likely
+  # low-sentimental-value "document photos": photographed book/recipe pages,
+  # screenshots of text, receipts, whiteboards. Fully local, no model download.
+  # Lower this to catch more (e.g. short screenshots); raise it if too many
+  # real photos with incidental text (signs, birthday cards) get flagged.
+  text_word_threshold: 25
+
   # --- Optional local Ollama vision pass (only used with --ollama) ---
   ollama:
     host: http://localhost:11434

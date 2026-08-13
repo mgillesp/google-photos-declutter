@@ -335,6 +335,7 @@ def main() -> int:
             "capture_date": dt.date().isoformat() if dt else "",
             "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
             "blur": None,
+            "text_words": None,
             "flags": set(),
         }
 
@@ -392,7 +393,27 @@ def main() -> int:
             oversized.append(r)
     print(f"    oversized videos: {len(oversized)}")
 
-    # 6) Optional Ollama junk classification
+    # 6) Text/document detection (local OCR) -- catches photographed book/
+    # recipe pages, screenshots of text, receipts: often low sentimental
+    # value, fully deterministic, no model download needed.
+    text_candidates = []
+    if shutil.which("tesseract"):
+        print("  - scanning for text-heavy images (tesseract OCR)...")
+        text_thresh = int(acfg["text_word_threshold"])
+        for r in records.values():
+            if r["is_video"]:
+                continue
+            count = media.text_word_count(r["path"])
+            r["text_words"] = count
+            if count is not None and count >= text_thresh:
+                r["flags"].add("text-heavy")
+                text_candidates.append(r)
+        print(f"    text-heavy candidates: {len(text_candidates)}")
+    else:
+        print("  ! tesseract not found; skipping text/document detection "
+              "(install with: brew install tesseract)", file=sys.stderr)
+
+    # 7) Optional Ollama junk classification
     junk = []
     if args.ollama:
         ocfg = acfg["ollama"]
@@ -438,7 +459,7 @@ def main() -> int:
     write_decisions_csv(csv_path, records)
     write_review_html(html_path, takeout, records,
                       dup_tagged, sim_tagged, burst_tagged,
-                      blur_candidates, oversized, junk, acfg)
+                      blur_candidates, oversized, text_candidates, junk, acfg)
 
     flagged = sum(1 for r in records.values() if r["flags"])
     print("\nDone.")
@@ -462,7 +483,8 @@ def write_decisions_csv(path: Path, records: dict[str, dict]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["rel_path", "filename", "capture_date", "date_source", "size_mb",
-                    "is_video", "blur_score", "flags", "suggested", "decision"])
+                    "is_video", "blur_score", "text_words", "flags", "suggested",
+                    "decision"])
         for r in rows:
             flags = ";".join(sorted(r["flags"]))
             suggested = "review" if r["flags"] else "keep"
@@ -470,6 +492,7 @@ def write_decisions_csv(path: Path, records: dict[str, dict]) -> None:
             w.writerow([r["rel"], r["name"], r["capture_date"], r["date_source"],
                         r["size_mb"], "yes" if r["is_video"] else "no",
                         "" if r["blur"] is None else r["blur"],
+                        "" if r.get("text_words") is None else r["text_words"],
                         flags, suggested, decision])
 
 
@@ -508,7 +531,8 @@ def _card(r: dict, max_px: int, extra: str = "") -> str:
 
 
 def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged,
-                      burst_tagged, blur_candidates, oversized, junk, acfg) -> None:
+                      burst_tagged, blur_candidates, oversized, text_candidates,
+                      junk, acfg) -> None:
     max_px = int(acfg["thumbnail_max_px"])
     parts: list[str] = []
 
@@ -559,6 +583,14 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
                        lambda r: f'{r.get("duration") and round(r["duration"])}s'
                        if r.get("duration") else ""),
             len(oversized))
+    section("Text-heavy / document photos (OCR)",
+            "Lots of recognizable text detected — photographed pages, receipts, "
+            "screenshots. Often low sentimental value. Defaults to keep — tap to "
+            "mark for delete.",
+            flat_block(text_candidates,
+                       lambda r: f'{r.get("text_words")} words'
+                       if r.get("text_words") else ""),
+            len(text_candidates))
     section("Junk candidates (Ollama)",
             "Screenshots/receipts/documents flagged by the local vision model. "
             "Defaults to keep — tap to mark for delete.",
@@ -579,6 +611,7 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
             "size_mb": r["size_mb"],
             "is_video": r["is_video"],
             "blur_score": r["blur"],
+            "text_words": r.get("text_words"),
             "flags": sorted(r["flags"]),
             "default_decision": r.get("default_decision", "keep"),
         }
@@ -658,7 +691,8 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
 <div id="toolbar">
   <strong>📸 {html.escape(batch_label)}</strong>
   <span class="counts">{flagged} flagged ·
-    <b id="cnt-keep">0</b> keep · <b id="cnt-delete">0</b> delete</span>
+    <b id="cnt-keep">0</b> keep · <b id="cnt-delete">0</b> delete ·
+    <b id="cnt-mb">0</b> MB freed</span>
   <span class="spacer"></span>
   <button type="button" class="secondary" id="btn-reset">Reset to suggested</button>
   <button type="button" id="btn-download">⬇ Download decisions.csv</button>
@@ -735,16 +769,23 @@ Generated by google-photos-declutter · deterministic local analysis.
   }}
 
   function updateCounts() {{
-    var keep = 0, del = 0;
+    var keep = 0, del = 0, savedMb = 0;
     var seen = {{}};
     document.querySelectorAll(".card[data-id]").forEach(function(el) {{
       var id = el.getAttribute("data-id");
       if (seen[id]) return;
       seen[id] = true;
-      if (decisionFor(id) === "delete") del++; else keep++;
+      if (decisionFor(id) === "delete") {{
+        del++;
+        var r = recordsById[id];
+        if (r && typeof r.size_mb === "number") savedMb += r.size_mb;
+      }} else {{
+        keep++;
+      }}
     }});
     document.getElementById("cnt-keep").textContent = keep;
     document.getElementById("cnt-delete").textContent = del;
+    document.getElementById("cnt-mb").textContent = savedMb.toFixed(1);
   }}
 
   function toggle(id) {{
@@ -795,7 +836,8 @@ Generated by google-photos-declutter · deterministic local analysis.
 
   function buildCsvText() {{
     var header = ["rel_path", "filename", "capture_date", "date_source", "size_mb",
-                  "is_video", "blur_score", "flags", "suggested", "decision"];
+                  "is_video", "blur_score", "text_words", "flags", "suggested",
+                  "decision"];
     var lines = [header.join(",")];
     records.forEach(function(r) {{
       var decision = decisionFor(r.id);
@@ -803,6 +845,7 @@ Generated by google-photos-declutter · deterministic local analysis.
       var row = [r.id, r.name, r.capture_date, r.date_source, r.size_mb,
                 r.is_video ? "yes" : "no",
                 (r.blur_score === null || r.blur_score === undefined) ? "" : r.blur_score,
+                (r.text_words === null || r.text_words === undefined) ? "" : r.text_words,
                 r.flags.join(";"), r.flags.length ? "review" : "keep", decisionOut];
       lines.push(row.map(csvEscape).join(","));
     }});

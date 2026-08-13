@@ -126,3 +126,36 @@ def exif_datetime(path: Path) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def text_word_count(path: Path, max_px: int = 1000) -> int | None:
+    """Count recognizable words via local OCR (tesseract) -- a deterministic,
+    no-model-download way to flag "low sentimental value" photos: photographed
+    book/recipe pages, screenshots of text, receipts, documents, whiteboards.
+    Runs fully on-device; returns None if tesseract isn't installed or the
+    image can't be read (caller should treat that as "unknown", not "zero").
+
+    The image is downscaled before OCR purely for speed -- word-count is a
+    coarse signal, not a transcription, so full resolution isn't needed.
+    """
+    if not shutil.which("tesseract"):
+        return None
+    tmp_path = None
+    try:
+        with _open_oriented(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_px, max_px))
+            fd, tmp_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            im.save(tmp_path, format="JPEG", quality=85)
+        proc = subprocess.run(
+            ["tesseract", tmp_path, "stdout"],
+            capture_output=True, text=True, timeout=30,
+        )
+        words = [w for w in proc.stdout.split() if sum(c.isalpha() for c in w) >= 3]
+        return len(words)
+    except Exception:
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
