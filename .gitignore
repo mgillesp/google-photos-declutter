@@ -66,3 +66,6 @@ env/
 .idea/
 .vscode/
 *.swp
+
+# --- Paid Gumroad bundle: NOT part of the public repo ---
+_gumroad/

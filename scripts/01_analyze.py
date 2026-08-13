@@ -41,6 +41,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from lib import media  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.preflight import (  # noqa: E402
+    check_tools,
+    explain_empty_batch,
+    explain_missing_takeout,
+)
 from lib.sidecars import (  # noqa: E402
     IMAGE_EXTS,
     VIDEO_EXTS,
@@ -275,6 +280,33 @@ def cluster_bursts(files_with_time: list[tuple[Path, int]], window: int) -> list
     return clusters
 
 
+def cluster_video_bursts(files_with_time_and_duration: list[tuple[Path, int, float | None]],
+                         window: int) -> list[list[Path]]:
+    """Group videos recorded back-to-back, accounting for each clip's own
+    duration -- a 2-minute video's start time is naturally ~2 minutes after
+    the previous clip's start simply because it takes that long to record,
+    which alone doesn't mean the clips are unrelated. Clusters by the gap
+    between one video's END time (start + duration) and the next video's
+    START time, not raw start-to-start proximity like the photo version.
+    """
+    timed = sorted(((t, (d or 0.0), p) for p, t, d in files_with_time_and_duration
+                    if t is not None), key=lambda x: x[0])
+    clusters: list[list[Path]] = []
+    cur: list[Path] = []
+    last_end: float | None = None
+    for start, dur, p in timed:
+        if last_end is not None and (start - last_end) <= window:
+            cur.append(p)
+        else:
+            if len(cur) >= 2:
+                clusters.append(cur)
+            cur = [p]
+        last_end = start + dur
+    if len(cur) >= 2:
+        clusters.append(cur)
+    return clusters
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -285,14 +317,22 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=None)
     args = ap.parse_args()
 
+    # Fail early and legibly if the Homebrew tools aren't there. None of these
+    # are strictly required to produce *a* review sheet, but without czkawka
+    # you lose duplicate detection, which is the whole point.
+    check_tools(optional=["czkawka_cli", "ffprobe", "tesseract"])
+
     batch_dir = args.batch.resolve()
     if not batch_dir.exists():
-        print(f"ERROR: {batch_dir} does not exist.", file=sys.stderr)
+        print(f"ERROR: {batch_dir} does not exist.\n\n"
+              "Create it and put this month's extracted Takeout inside, e.g.:\n"
+              f"  mkdir -p {batch_dir}/takeout\n"
+              "then extract the Takeout zip into that folder.",
+              file=sys.stderr)
         return 2
     takeout = resolve_takeout_dir(batch_dir)
     if not takeout.exists():
-        print(f"ERROR: takeout dir {takeout} does not exist. Extract the zip there.",
-              file=sys.stderr)
+        print(explain_missing_takeout(batch_dir, takeout), file=sys.stderr)
         return 2
     # Output goes to the batch dir (parent of takeout, or the arg itself).
     out_dir = batch_dir if (batch_dir / "takeout").is_dir() else batch_dir
@@ -309,7 +349,7 @@ def main() -> int:
     media_files = list(iter_media(takeout))
     print(f"  - found {len(media_files)} media files")
     if not media_files:
-        print("No media found; nothing to do.", file=sys.stderr)
+        print(explain_empty_batch(batch_dir, takeout), file=sys.stderr)
         return 1
 
     # Per-file record
@@ -362,6 +402,42 @@ def main() -> int:
     burst_groups = cluster_bursts(img_times, int(acfg["burst_window_seconds"]))
     print(f"  - timestamp burst groups: {len(burst_groups)}")
 
+    # 3b) Video duration (ffprobe) -- computed once here, reused by both video
+    # burst clustering below and the oversized-video check later, instead of
+    # probing each video twice.
+    video_records = [r for r in records.values() if r["is_video"]]
+    if video_records:
+        print("  - probing video durations (ffprobe)...")
+        for r in video_records:
+            _, dur = video_info(r["path"])
+            r["duration"] = dur
+
+    # 3c) Burst clustering among videos, accounting for each clip's own
+    # duration (see cluster_video_bursts docstring) -- a wider window than
+    # photos by default since videos naturally space out more.
+    vid_times = [(r["path"], r["epoch"], r.get("duration")) for r in video_records]
+    video_burst_groups = cluster_video_bursts(
+        vid_times, int(acfg["video_burst_window_seconds"]))
+    print(f"  - video burst groups: {len(video_burst_groups)}")
+
+    # 3d) Similar videos (czkawka content-hash comparison). Skip videos
+    # already caught by the timestamp-burst pass above -- they're already
+    # flagged for review, so there's no need to also flag them here and
+    # show the same clip in two different sections.
+    video_sim_groups: list[list[str]] = []
+    if video_records:
+        vid_tolerance = str(acfg["czkawka_video_tolerance"])
+        print(f"  - running czkawka similar-video detection (tolerance {vid_tolerance})...")
+        raw_video_sim_groups = run_czkawka("video", takeout, ["-t", vid_tolerance])
+        already_burst = {str(p) for g in video_burst_groups for p in g}
+        for g in raw_video_sim_groups:
+            remaining = [k for k in g if k not in already_burst]
+            if len(remaining) >= 2:
+                video_sim_groups.append(remaining)
+        print(f"    similar-video groups: {len(video_sim_groups)} "
+              f"({len(raw_video_sim_groups) - len(video_sim_groups)} skipped -- "
+              "already flagged as a video burst)")
+
     # 4) Blur scoring (images only)
     print("  - scoring blur (Laplacian variance)...")
     blur_thresh = float(acfg["blur_variance_threshold"])
@@ -376,17 +452,13 @@ def main() -> int:
             blur_candidates.append(r)
     print(f"    blur candidates: {len(blur_candidates)}")
 
-    # 5) Oversized videos
-    print("  - probing videos (ffprobe)...")
+    # 5) Oversized videos (reuses the duration probed in step 3b above)
     max_bytes = float(acfg["video_max_mb"]) * 1024 * 1024
     max_secs = float(acfg["video_max_seconds"] or 0)
     oversized = []
-    for r in records.values():
-        if not r["is_video"]:
-            continue
-        size, dur = video_info(r["path"])
-        r["duration"] = dur
-        too_big = size > max_bytes
+    for r in video_records:
+        dur = r.get("duration")
+        too_big = (r["size_mb"] * 1024 * 1024) > max_bytes
         too_long = max_secs > 0 and dur is not None and dur > max_secs
         if too_big or too_long:
             r["flags"].add("oversized-video")
@@ -448,10 +520,16 @@ def main() -> int:
     dup_tagged = tag_groups(dup_groups, "dup")
     sim_tagged = tag_groups(sim_groups, "sim")
     burst_tagged = tag_groups([[str(p) for p in g] for g in burst_groups], "burst")
+    video_burst_tagged = tag_groups(
+        [[str(p) for p in g] for g in video_burst_groups], "vburst")
+    video_sim_tagged = tag_groups(video_sim_groups, "vsim")
 
     # One default keep/delete decision per file (sharpest/largest wins within
     # each duplicate/similar/burst cluster); everything else defaults to keep.
-    compute_default_decisions(records, dup_tagged, sim_tagged, burst_tagged)
+    # For video-only clusters, "sharpest" doesn't apply (blur is None), so the
+    # largest file wins instead -- see compute_default_decisions/sharpness_key.
+    compute_default_decisions(records, dup_tagged, sim_tagged, burst_tagged,
+                              video_burst_tagged, video_sim_tagged)
 
     # Write outputs
     csv_path = out_dir / "decisions.csv"
@@ -459,6 +537,7 @@ def main() -> int:
     write_decisions_csv(csv_path, records)
     write_review_html(html_path, takeout, records,
                       dup_tagged, sim_tagged, burst_tagged,
+                      video_burst_tagged, video_sim_tagged,
                       blur_candidates, oversized, text_candidates, junk, acfg)
 
     flagged = sum(1 for r in records.values() if r["flags"])
@@ -531,7 +610,8 @@ def _card(r: dict, max_px: int, extra: str = "") -> str:
 
 
 def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged,
-                      burst_tagged, blur_candidates, oversized, text_candidates,
+                      burst_tagged, video_burst_tagged, video_sim_tagged,
+                      blur_candidates, oversized, text_candidates,
                       junk, acfg) -> None:
     max_px = int(acfg["thumbnail_max_px"])
     parts: list[str] = []
@@ -572,6 +652,18 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
             "Taken within seconds of each other — likely a burst. Sharpest is "
             "pre-selected to keep.",
             group_block(burst_tagged, "one is pre-selected to keep"), len(burst_tagged))
+    section("Video bursts (by time)",
+            "Clips recorded back-to-back (accounting for each clip's own "
+            "length, not just start time). Largest file is pre-selected to "
+            "keep.",
+            group_block(video_burst_tagged, "one is pre-selected to keep"),
+            len(video_burst_tagged))
+    section("Similar videos",
+            "Visually near-identical content (czkawka). Clips already caught "
+            "by Video bursts above are skipped here to avoid double-review. "
+            "Largest file is pre-selected to keep.",
+            group_block(video_sim_tagged, "one is pre-selected to keep"),
+            len(video_sim_tagged))
     section("Blur candidates",
             "Low sharpness score (possibly blurry/accidental). Defaults to keep "
             "— tap any you want to mark for delete.",

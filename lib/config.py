@@ -20,7 +20,9 @@ DEFAULTS: dict = {
     "analysis": {
         "blur_variance_threshold": 60.0,
         "burst_window_seconds": 3,
+        "video_burst_window_seconds": 20,
         "czkawka_max_difference": 10,
+        "czkawka_video_tolerance": 10,
         "video_max_mb": 200,
         "video_max_seconds": 0,
         "thumbnail_max_px": 320,

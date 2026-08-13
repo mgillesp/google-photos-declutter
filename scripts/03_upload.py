@@ -59,9 +59,21 @@ def get_credentials(cfg: dict):
     scopes = [cfg["upload"]["scope"]]
 
     if not client_secret.exists():
-        print(f"ERROR: OAuth client secret not found at {client_secret}\n"
-              f"Follow {SETUP_DOC} to create a Desktop OAuth client and download it "
-              f"there.", file=sys.stderr)
+        print(
+            "\n" + "=" * 68 + "\n"
+            "Google credentials aren't set up yet.\n"
+            + "=" * 68 + "\n\n"
+            f"Expected to find your OAuth client file here:\n  {client_secret}\n\n"
+            "This is the one-time Google Cloud Console setup — about 10 minutes "
+            "of clicking, no coding. It creates the credential this script uses "
+            "to upload files back into your own Google Photos library.\n\n"
+            f"Walkthrough: {SETUP_DOC}\n\n"
+            "If you already downloaded the JSON from the Cloud Console, it's "
+            "probably still in Downloads under a long name. Move it into place "
+            "with:\n"
+            f"  mkdir -p {client_secret.parent}\n"
+            f"  mv ~/Downloads/client_secret_*.json {client_secret}\n",
+            file=sys.stderr)
         raise SystemExit(3)
 
     creds = None
@@ -80,15 +92,47 @@ def get_credentials(cfg: dict):
             _save_token(token_path, creds)
             return creds
         except RefreshError:
-            print("Refresh token expired (Testing-mode ~7-day limit). "
-                  "Opening a quick re-authorization in your browser...\n",
+            print("\nYour Google sign-in expired — this is expected, not a bug.\n"
+                  "Because the Cloud project is deliberately left in 'Testing' "
+                  "mode (which avoids Google's app-verification review), sign-ins "
+                  "last about 7 days. It's been longer than that.\n\n"
+                  "Opening a ~30-second re-authorization in your browser now. "
+                  "Approve it and the upload picks up exactly where it left "
+                  "off — nothing already uploaded gets re-sent.\n",
                   file=sys.stderr)
             creds = None
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), scopes)
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), scopes)
+    except (ValueError, json.JSONDecodeError):
+        print(f"\nThe credentials file at {client_secret} isn't a valid Google "
+              "OAuth client file.\n\n"
+              "Most common cause: the wrong file got moved into place, or the "
+              "download was interrupted. Re-download the JSON from Google Cloud "
+              "Console → APIs & Services → Credentials, and make sure the client "
+              "type is 'Desktop app' (not 'Web application' — a Web client will "
+              "fail here).\n"
+              f"See {SETUP_DOC}, step 4.\n", file=sys.stderr)
+        raise SystemExit(3)
+
     print("A browser window will open for Google authorization "
           "(this is the consent screen, not the Photos grid).")
-    creds = flow.run_local_server(port=0, prompt="consent")
+    print('You will see a "Google hasn\'t verified this app" warning — that is '
+          "expected for a Testing-mode project. Click Advanced, then continue.")
+    print("Sign in as the account that owns the photo library you're cleaning up.")
+    try:
+        creds = flow.run_local_server(port=0, prompt="consent")
+    except Exception as e:  # noqa: BLE001 - surface anything as plain English
+        print(f"\nGoogle authorization didn't complete: {e}\n\n"
+              "Things worth checking:\n"
+              "  - Did you sign in with an account listed under 'Test users' on "
+              "the OAuth consent screen? Only listed accounts can get past the "
+              "unverified-app warning.\n"
+              "  - Did the browser tab finish loading back to a 'The "
+              "authentication flow has completed' page? Closing it early "
+              "cancels the flow.\n"
+              f"  - See {SETUP_DOC}, steps 3 and 5.\n", file=sys.stderr)
+        raise SystemExit(3)
     _save_token(token_path, creds)
     return creds
 
@@ -100,6 +144,31 @@ def _save_token(token_path: Path, creds) -> None:
         token_path.chmod(0o600)
     except OSError:
         pass
+
+
+def explain_http_error(status: int, body: str) -> str | None:
+    """Translate the Google API errors a first-time user actually hits."""
+    if status in (401, 403):
+        if "insufficient" in body.lower() or "scope" in body.lower():
+            return (
+                "Google rejected the request because the sign-in doesn't carry "
+                "the upload permission.\n"
+                "    Fix: delete the cached token and re-authorize —\n"
+                "      rm ~/.config/gphotos-declutter/token.json\n"
+                "    then re-run this script and approve the consent screen.")
+        return (
+            "Google refused the request (not signed in, or the sign-in "
+            "expired mid-run).\n"
+            "    Fix: re-run this script. It re-authorizes automatically and "
+            "skips anything already uploaded.")
+    if status == 429:
+        return ("You've hit Google's rate limit for the day.\n"
+                "    Fix: wait a few hours and re-run — completed uploads are "
+                "skipped, so you lose nothing.")
+    if status in (500, 502, 503, 504):
+        return ("Google's servers returned an error. This is usually "
+                "temporary.\n    Fix: re-run this script in a few minutes.")
+    return None
 
 
 def upload_bytes(session, token: str, path: Path) -> str | None:
@@ -133,6 +202,9 @@ def upload_bytes(session, token: str, path: Path) -> str | None:
             return resp.text
         print(f"    ! upload failed for {path.name}: {resp.status_code} "
               f"{resp.text[:160]}", file=sys.stderr)
+        hint = explain_http_error(resp.status_code, resp.text)
+        if hint:
+            print(f"    {hint}", file=sys.stderr)
         return None
     return None
 
@@ -162,6 +234,9 @@ def batch_create(session, token: str, items: list[tuple[str, str]]) -> list[dict
         if resp.status_code != 200:
             print(f"    ! batchCreate failed: {resp.status_code} {resp.text[:200]}",
                   file=sys.stderr)
+            hint = explain_http_error(resp.status_code, resp.text)
+            if hint:
+                print(f"    {hint}", file=sys.stderr)
             return []
         return resp.json().get("newMediaItemResults", [])
     return []
@@ -218,7 +293,12 @@ def main() -> int:
     batch_dir = args.batch.resolve()
     reupload = batch_dir / "reupload"
     if not reupload.is_dir():
-        print(f"ERROR: {reupload} not found. Run 02_restore_exif.py first.",
+        print(f"\nNothing staged to upload for this batch.\n\n"
+              f"  Expected: {reupload}\n\n"
+              "That folder is created by the date-restore step. Run it first:\n"
+              f"  python3 scripts/02_restore_exif.py {args.batch}\n\n"
+              "If that step also failed, you probably haven't finished the "
+              "review yet — see QUICKSTART.md, steps 3 and 4.\n",
               file=sys.stderr)
         return 2
 

@@ -1,183 +1,245 @@
 # google-photos-declutter
 
-Local, privacy-preserving tooling to declutter a Google Photos library **one
-calendar month at a time**, with a human-in-the-loop review before anything is
-deleted.
+**Find the duplicates, bursts, blurry shots and oversized videos in your Google
+Photos library — without any of it leaving your computer.**
 
-## Design constraints (why it works this way)
+Free and open source (MIT). Runs locally. No server, no account, no cloud AI.
 
-1. **No cloud LLM ever sees your photos.** All analysis is local and deterministic
-   (perceptual hashing, Laplacian-variance blur scoring, ffprobe), or an *optional*
-   vision model running entirely on your own machine via Ollama. Nothing is uploaded
-   to Claude/OpenAI/etc.
-2. **No browser automation of the Google Photos grid.** The steps that touch the
-   Photos website (exporting via Takeout, and moving a month to Trash) are done by
-   **you**, manually, in a normal browser. The scripts never screenshot or drive that
-   UI. Re-upload goes through the official **Google Photos Library API**, not the web
-   UI.
-3. **Human-in-the-loop before deletion.** You review a generated sheet and mark
-   keep/delete yourself. The scripts never delete anything in your library.
-
-The review sheet and your photos stay on your machine. This repo contains **only
-code** — a strict `.gitignore` keeps all media, review sheets, tokens, and
-credentials out of git.
+<!-- SCREENSHOT: replace with an image of review.html showing grouped duplicates
+     and the MB-freed counter. Use a batch you don't mind publishing, or blur faces.
+     ![The offline review sheet](docs/images/review-sheet.png) -->
 
 ---
 
-## One-time setup
+## Why this exists
+
+I had about twelve thousand photos in Google Photos and no realistic way to clean
+them up.
+
+Google's own **Review and Delete** tool flags blurry shots, screenshots and large
+videos — but not duplicates, which was most of my problem. The paid tools that
+*do* handle duplicates want around $40/year, and they want read access to your
+entire photo library to do it.
+
+So I wrote something that runs on my own machine instead, and used it on my
+family's library a month at a time.
+
+## What it does
+
+- **Exact duplicates and near-identical shots** — perceptual hashing via czkawka
+- **Burst sequences** grouped, with the sharpest frame pre-selected to keep
+- **Blurry photos** scored by Laplacian variance
+- **Oversized videos** flagged so you can move them somewhere cheaper
+- **Screenshots and photographed documents** spotted by local OCR
+- **An offline review page** — tap to keep or delete, with a running MB-freed total
+- **Original capture dates preserved**, so keepers land back in the right place in
+  your timeline rather than all appearing as "today"
+
+Nothing is deleted without you reviewing it first, and Google's 60-day trash is
+your undo.
+
+## The privacy part, concretely
+
+Every analysis step runs on your machine: perceptual hashing, blur scoring,
+`ffprobe`, `tesseract` OCR. The optional vision pass runs through a local model
+via Ollama. **No photo is ever sent to Anthropic, OpenAI, Google, or me.**
+
+The only network call the tool makes is uploading your own keeper files back to
+your own Google Photos account, through Google's official API.
+
+You don't have to take my word for any of that — that's why this repo is public.
+Read [`scripts/01_analyze.py`](scripts/01_analyze.py); it's the code that touches
+your photos.
+
+## What it deliberately doesn't do
+
+- **It doesn't delete anything in your library.** Google restricted the Photos
+  API in March 2025 — third-party apps can no longer read or delete existing
+  library items. The only scope still available is `appendonly`, which uploads
+  and nothing else. Deletion is your manual browser step, by design and by
+  necessity.
+- **It doesn't drive the Google Photos website.** No browser automation, no
+  screenshotting the grid. That approach breaks whenever Google reskins a page,
+  and a script with permission to bulk-delete your photos is not something you
+  want running unattended.
+- **It isn't an app.** It's Python scripts you run in a terminal.
+
+If you see a product advertising full-library cloud scanning of Google Photos,
+it's worth asking how they're getting that access.
+
+---
+
+## Requirements
+
+- macOS or Linux (Windows untested; WSL will probably work)
+- Python 3.10+
+- Comfort with a terminal
+- Homebrew, for four command-line tools
+
+## Install
 
 ```bash
-# 1. External tools
 brew install czkawka exiftool ffmpeg tesseract
-
-# 2. Python deps (Python 3.10+)
+git clone https://github.com/<your-username>/google-photos-declutter.git
+cd google-photos-declutter
 pip3 install -r requirements.txt
+```
 
-# 3. (optional) local vision model for the --ollama junk pass
-#    brew install ollama && ollama serve & ; ollama pull moondream
+Then follow [`docs/GOOGLE_CLOUD_SETUP.md`](docs/GOOGLE_CLOUD_SETUP.md) for the
+one-time Google Cloud / OAuth setup (~10 minutes of browser clicking, needed only
+for the re-upload step).
 
-# 4. Google Cloud / OAuth (needed only for the re-upload step)
-#    Follow docs/GOOGLE_CLOUD_SETUP.md  (project in Testing mode, Desktop OAuth client,
-#    photoslibrary.appendonly scope)
+Optional threshold tuning:
 
-# 5. (optional) tune thresholds
-cp config.example.yaml config.yaml   # config.yaml is gitignored
+```bash
+cp config.example.yaml config.yaml    # gitignored
 ```
 
 ---
 
-## The per-batch workflow (one calendar month)
+## The per-batch workflow
 
-Legend: **[YOU — browser]** = you do it manually in a browser · **[SCRIPT]** = you
-run a local script. Work oldest month first as a low-risk shakedown.
+One calendar month at a time. **[BROWSER]** is you; **[SCRIPT]** is a command.
+Start with your oldest month — it's the low-stakes place to learn how aggressive
+the flagging is.
 
-### 1. [YOU — browser] Export the month via Takeout
-- In Google Photos, search the month, **Select all**, add everything to a temporary
-  album (e.g. `declutter-2019-05`).
-- Run **Google Takeout** scoped to just that album; download the zip.
-- Extract it into `batches/<YYYY-MM>/takeout/` in this repo, e.g.:
-  ```
-  batches/2019-05/takeout/Takeout/Google Photos/...
-  ```
-  (Anything under `batches/` is gitignored.)
+### 1. [BROWSER] Export the month via Takeout
 
-### 2. [SCRIPT] Analyze + generate the review sheet
+Search the month in Google Photos, **Select all**, add everything to a temporary
+album (e.g. `declutter-2019-05`). Run **Google Takeout** scoped to just that
+album, download the zip, and extract it into the batch folder:
+
+```
+batches/2019-05/takeout/Takeout/Google Photos/...
+```
+
+Everything under `batches/` is gitignored.
+
+### 2. [SCRIPT] Analyze
+
 ```bash
 python3 scripts/01_analyze.py batches/2019-05
-# add --ollama to also run the local vision junk pass
 ```
-Produces `batches/2019-05/review.html` and `batches/2019-05/decisions.csv`.
 
-### 3. [YOU / Kathryn] Review and mark decisions
-- Open `review.html` in a browser (fully offline; thumbnails are embedded) — great
-  for reviewing together.
-- It groups: **exact duplicates · similar images · bursts · blur candidates ·
-  oversized videos · text-heavy/document photos · junk candidates**. **Tap a
-  photo** to toggle keep (✓ green) / delete (✕ red). Duplicate/similar/burst
-  groups start with the sharpest shot pre-selected to keep — tap another if
-  you'd rather keep a different one (or tap more than one to keep several).
-  Tap the 🔍 icon on a card for a larger view. **Anything not shown on the
-  page is unflagged and stays kept automatically** — you only need to review
-  what's there.
-- The toolbar shows a live **MB freed** total as you mark things for delete.
-- **Text-heavy/document photos** are detected with local OCR (`tesseract`) —
-  no cloud, no model download. Photos with a lot of recognizable text
-  (photographed book/recipe pages, screenshots of text, receipts) get flagged
-  since they're often low sentimental value, but they default to **keep**
-  like the other single-item flags — nothing is pre-selected for deletion
-  here. Tune the sensitivity via `text_word_threshold` in `config.yaml`.
-- When done, click **⬇ Download decisions.csv** in the toolbar, then move the
-  downloaded file into this batch's folder, overwriting the one `01_analyze.py`
-  generated:
-  ```bash
-  mv ~/Downloads/decisions.csv batches/2019-05/decisions.csv
-  ```
-- Prefer editing the CSV by hand instead? `decisions.csv` is pre-filled with the
-  same suggested defaults the page starts from — set `decision` to `delete` for
-  anything you want gone, leave it blank to keep.
+Add `--ollama` for the optional local vision pass. Produces `review.html` and
+`decisions.csv`.
 
-### 4. [SCRIPT] Restore capture dates onto keepers
+### 3. [YOU] Review
+
+Open `batches/2019-05/review.html` — fully offline, thumbnails embedded.
+
+Grouped into: exact duplicates · similar images · bursts · video bursts ·
+similar videos · blur candidates · oversized videos · text-heavy/document
+photos · junk candidates.
+
+Video bursts use a wider, duration-aware window than photo bursts (a clip's
+own length shouldn't count against it — see `video_burst_window_seconds` in
+`config.yaml`). Videos already caught by a video burst are skipped in the
+similar-videos pass so the same clip doesn't show up flagged twice.
+
+Tap a photo to toggle keep (✓) / delete (✕). Duplicate, similar and burst groups
+start with the sharpest shot pre-selected — tap another if you'd rather keep a
+different one, or several to keep more than one. Single-item flags default to
+keep. **Anything not shown on the page is kept automatically**, so you only
+review what's flagged.
+
+When done, click **⬇ Download decisions.csv**, then move it into the batch
+folder:
+
 ```bash
-python3 scripts/02_restore_exif.py batches/2019-05        # add --dry-run to preview
-python3 scripts/02_restore_exif.py batches/2019-05 --fill-missing-dates
+mv ~/Downloads/decisions.csv batches/2019-05/decisions.csv
 ```
-Copies every keeper into `batches/2019-05/reupload/` and writes the correct capture
-date (from the Takeout JSON sidecars, falling back to the file's own embedded EXIF)
-into each file via exiftool.
 
-A rare few files have neither — no sidecar match, no EXIF at all. `--fill-missing-dates`
-(off by default) assigns those the **earliest capture date found anywhere in the
-batch's `decisions.csv`**, so they still land somewhere sane in the timeline instead
-of defaulting to the upload date. This is a reasonable assumption for a tightly
-time-scoped batch (one month); for a full-year batch the true earliest could be many
-months off from where the file actually belongs, so review the flagged files
-afterward — the script always reports exactly which ones it applied the fallback to.
+Prefer editing by hand? `decisions.csv` is pre-filled with the same defaults —
+set `decision` to `delete` for anything you want gone.
 
-### 5. [YOU — browser] Trash the month in Google Photos
-- Search the same month again, **Select all**, **move to Trash**.
-- Google keeps trash for **60 days** before permanent deletion — your safety net.
+### 4. [SCRIPT] Restore capture dates on the keepers
 
-### 6. [SCRIPT] Re-upload the corrected keepers
 ```bash
-python3 scripts/03_upload.py batches/2019-05              # add --dry-run to preview
+python3 scripts/02_restore_exif.py batches/2019-05 --dry-run
+python3 scripts/02_restore_exif.py batches/2019-05
 ```
-Uploads keepers via the Photos API. Because dates are baked in, they slot back into
-the right place in your timeline. Idempotent + resumable (`upload_log.json`).
 
-Before uploading anything for real, it asks you to confirm you've **already**
-completed step 5 (trashed the originals) — uploading before trashing would create
-duplicates instead of a clean re-sort. Type `yes` to proceed. This is only asked
-once per batch (a marker file remembers it), so retries/resumes (e.g. after a
-7-day re-auth) won't ask again. `--dry-run` skips the prompt entirely since it
-makes no real changes.
+Copies keepers into `reupload/` and writes the correct capture date into each
+file from the Takeout JSON sidecars.
 
-> First run opens a browser for Google authorization (Testing-mode consent, ~30s).
-> If it's been >7 days since your last upload, it re-prompts automatically — expected,
-> not an error. See `docs/GOOGLE_CLOUD_SETUP.md`.
+### 5. [BROWSER] Trash the month
 
-### 7. [SCRIPT] Clean up local disk space
+Search the month again, **Select all**, **move to Trash**. All of it — you have
+clean dated copies staged locally. Google holds trash **60 days**.
+
+Do this *before* step 6. Uploading first leaves you with duplicates.
+
+### 6. [SCRIPT] Re-upload the keepers
+
 ```bash
-python3 scripts/04_cleanup.py batches/2019-05 --dry-run     # preview first
-python3 scripts/04_cleanup.py batches/2019-05               # asks to confirm
+python3 scripts/03_upload.py batches/2019-05 --dry-run
+python3 scripts/03_upload.py batches/2019-05
 ```
-Once a batch is fully uploaded, its local Takeout zip(s), extracted originals,
-`reupload/`, and `review.html` (which embeds a real thumbnail of every flagged
-photo, so it counts as media too) are no longer needed — everything's safely in
-Google Photos, with the trashed originals in Google's 60-day recovery window as a
-second safety net. This deletes all of that and keeps only `decisions.csv` and
-`upload_log.json` — the actual record of what was reviewed and uploaded.
 
-**Refuses to delete anything unless every kept file in `decisions.csv` is
-confirmed uploaded** (cross-checked against `upload_log.json` with a real
-`mediaItemId`) — if even one keeper is missing or failed, cleanup aborts with a
-list of what's wrong instead of touching any files.
+Idempotent and resumable — if it fails partway, just run it again. It asks you to
+confirm step 5 is done before uploading anything for real.
 
-After a successful cleanup it also writes `batches/2019-05/CLEANUP_SUMMARY.md`
-(basic results for that batch: counts, MB freed in the Google Photos library,
-local disk space reclaimed) and appends one row to a repo-root `CLEANUP_LOG.md`
-— a running history across every batch over time. Neither contains filenames or
-photo content, just aggregate counts; `CLEANUP_LOG.md` isn't gitignored, so it's
-safe to commit as a visible project history if you want one.
+> First run opens a browser for Google authorization (~30s). If it's been more
+> than 7 days since the last upload, it re-prompts automatically. That's the
+> Testing-mode token expiry — expected, not an error.
+
+### 7. Clean up
+
+```bash
+python3 scripts/04_cleanup.py batches/2019-05
+```
+
+Reclaims local disk space once you've verified the month looks right.
+
+---
+
+## Guided setup — $14
+
+The code is free and always will be. If you'd rather not fumble through the
+Google Cloud Console part, there's a paid bundle with the walkthrough I wish I'd
+had:
+
+- Annotated Google Cloud setup, with the two mistakes that cost me an evening
+  called out inline
+- A pre-flight checklist that catches problems in three minutes
+- Full workflow guide with realistic timings
+- Troubleshooting guide covering every error I actually hit
+- **A Claude skill** that runs the pipeline with you, reads your error output,
+  and tells you what went wrong — plus a paste-in prompt pack for ChatGPT
+
+**[Get the guided setup →](https://gumroad.com/l/<your-product>)**
+
+Entirely optional. Everything you need to use this tool is in this repo.
 
 ---
 
 ## Repo layout
+
 ```
 scripts/01_analyze.py       analysis + offline review-sheet generator
 scripts/02_restore_exif.py  copy keepers + bake in correct capture dates
-scripts/03_upload.py        OAuth + Photos API re-upload (no browser automation)
-scripts/04_cleanup.py       delete local media once a batch is fully uploaded
-lib/                        shared helpers (sidecar matching, HEIC media, config)
-config.example.yaml         tunable thresholds (blur, video size, similarity, ...)
+scripts/03_upload.py        OAuth + Photos API re-upload
+scripts/04_cleanup.py       reclaim local disk space after a verified batch
+lib/                        sidecar matching, HEIC media, config, preflight checks
+config.example.yaml         tunable thresholds
 docs/GOOGLE_CLOUD_SETUP.md  one-time Google Cloud / OAuth click-through
 batches/<YYYY-MM>/          per-batch working dir (gitignored)
 ```
 
 ## Notes & limitations
-- Capture dates are derived from the Takeout sidecar's UTC timestamp; timeline
-  placement is accurate to the day (what Google sorts on). Near-midnight items may
-  shift by a timezone offset.
-- The `appendonly` scope is upload-only by design; it cannot read or delete your
-  existing library. Deletion is always your manual, reversible (60-day trash) step.
-- Tune `config.yaml` after your first batch if blur/similarity flagging is too
-  aggressive or too loose.
+
+- Capture dates come from the Takeout sidecar's UTC timestamp; timeline placement
+  is accurate to the day (what Google sorts on). Near-midnight items may shift by
+  a timezone offset.
+- The `appendonly` scope cannot read or delete your existing library. Deletion is
+  always your manual, reversible step.
+- Tune `config.yaml` after your first batch if flagging is too aggressive or too
+  loose. Re-running analysis costs nothing — nothing is committed until step 5.
+- **Keep an independent backup before you start.** 60-day trash is a safety net,
+  not a backup.
+
+## License
+
+MIT — see [LICENSE](LICENSE). No warranty; you're responsible for your own photos
+and your own Google account.

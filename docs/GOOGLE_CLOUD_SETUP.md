@@ -23,14 +23,18 @@ this touches the Photos grid — it's the Cloud Console + a standard OAuth conse
 2. User type: **External** → **Create**.
 3. Fill required fields:
    - App name: `photos-declutter`
-   - User support email: `mitchell.gillespie@gmail.com`
-   - Developer contact email: `mitchell.gillespie@gmail.com`
+   - User support email: **your own email address**
+   - Developer contact email: **your own email address**
    - (Logo/links optional — leave blank.)
+
+   > This app is only ever used by you. Nobody else sees these fields, and
+   > Google won't contact you about them while the project stays in Testing.
 4. **Scopes** step: you don't have to add the scope here; the script requests it at
    run time. You can skip adding scopes. → **Save and Continue**.
-5. **Test users** step → **Add users**:
-   - `mitchell.gillespie@gmail.com`
-   - Kathryn's Google account email
+5. **Test users** step → **Add users**: add the Google account that **owns the
+   photo library you want to clean up**. If a partner or family member owns the
+   library (or you're cleaning up a shared one), add their address here too —
+   only accounts on this list can complete the sign-in.
    → **Save and Continue**.
 6. Back on the OAuth consent screen, **leave Publishing status = "Testing"**.
    ⚠️ Do **NOT** click "Publish app" / do not submit for verification. Testing mode
@@ -49,9 +53,10 @@ this touches the Photos grid — it's the Cloud Console + a standard OAuth conse
 
 ## 5. First authorization (happens automatically on first upload)
 The first time you run `scripts/03_upload.py`, a browser window opens asking you to
-sign in and grant the `photoslibrary.appendonly` scope. Sign in as the account whose
-library you're restoring (Kathryn's, or whichever account owns the photos), approve,
-and the script caches a token at `~/.config/gphotos-declutter/token.json`.
+sign in and grant the `photoslibrary.appendonly` scope. Sign in as **the account
+that owns the photos you're restoring** — not necessarily the account you used to
+create the Cloud project. Approve, and the script caches a token at
+`~/.config/gphotos-declutter/token.json`.
 
 > You'll see a "Google hasn't verified this app" warning because the app is in
 > Testing mode — that's expected. Click **Continue** (Advanced → Go to

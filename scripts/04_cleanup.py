@@ -94,8 +94,8 @@ def verify_fully_uploaded(batch_dir: Path) -> tuple[bool, list[str], int]:
 
 def library_stats(batch_dir: Path) -> dict:
     """Aggregate counts/MB from decisions.csv -- the Google Photos library
-    side of the savings (space freed in Kathryn's actual library), distinct
-    from local disk space reclaimed by this script."""
+    side of the savings (space freed in the Google Photos account itself),
+    distinct from local disk space reclaimed by this script."""
     with open(batch_dir / "decisions.csv", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     deleted_rows = [r for r in rows if is_delete(r.get("decision", ""))]

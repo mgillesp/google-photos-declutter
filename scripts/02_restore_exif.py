@@ -40,6 +40,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from lib import media  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.preflight import check_tools, explain_missing_takeout  # noqa: E402
 from lib.sidecars import VIDEO_EXTS, build_index  # noqa: E402
 
 DELETE_TOKENS = {"delete", "del", "d", "x", "remove", "rm", "trash", "no"}
@@ -84,19 +85,25 @@ def main() -> int:
                     "belongs, so review the affected files after using this.")
     args = ap.parse_args()
 
-    if not shutil.which("exiftool"):
-        print("ERROR: exiftool not found. Install with: brew install exiftool",
-              file=sys.stderr)
-        return 3
+    check_tools(required=["exiftool"])
 
     batch_dir = args.batch.resolve()
     takeout = resolve_takeout_dir(batch_dir)
+    if not takeout.exists():
+        print(explain_missing_takeout(batch_dir, takeout), file=sys.stderr)
+        return 2
     out_root = batch_dir if (batch_dir / "takeout").is_dir() else batch_dir
     decisions_csv = out_root / "decisions.csv"
     reupload = out_root / "reupload"
 
     if not decisions_csv.exists():
-        print(f"ERROR: {decisions_csv} not found. Run 01_analyze.py first.",
+        print(f"\nNo decisions file found at:\n  {decisions_csv}\n\n"
+              "That file is produced by the review step. Either:\n"
+              "  - you haven't run scripts/01_analyze.py on this batch yet, or\n"
+              "  - you reviewed in review.html and clicked "
+              "'Download decisions.csv', but the file is still sitting in your\n"
+              "    Downloads folder. Move it into the batch folder:\n"
+              f"      mv ~/Downloads/decisions.csv {decisions_csv}\n",
               file=sys.stderr)
         return 2
 
