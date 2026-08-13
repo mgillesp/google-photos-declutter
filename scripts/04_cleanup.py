@@ -8,7 +8,11 @@ review.html embeds a real thumbnail of every flagged photo, so it counts as
 media content too, not just a decisions record).
 
 Keeps the actual work record: decisions.csv (every keep/delete decision) and
-upload_log.json (proof of what was uploaded, with real mediaItemIds).
+upload_log.json (proof of what was uploaded, with real mediaItemIds). Also
+writes a short batches/<name>/CLEANUP_SUMMARY.md for that batch, and appends
+one row to a repo-root CLEANUP_LOG.md so there's a running history of space
+reclaimed across every batch over time. Neither file contains filenames or
+photo content -- just aggregate counts -- so both are safe to commit to git.
 
 SAFETY: refuses to delete anything unless every non-deleted row in
 decisions.csv has a matching "uploaded" entry in upload_log.json. This is a
@@ -29,12 +33,14 @@ import csv
 import json
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 DELETE_TOKENS = {"delete", "del", "d", "x", "remove", "rm", "trash", "no"}
+CLEANUP_LOG = REPO_ROOT / "CLEANUP_LOG.md"
 
 
 def is_delete(decision: str) -> bool:
@@ -86,11 +92,34 @@ def verify_fully_uploaded(batch_dir: Path) -> tuple[bool, list[str], int]:
     return (len(problems) == 0), problems, len(keepers)
 
 
+def library_stats(batch_dir: Path) -> dict:
+    """Aggregate counts/MB from decisions.csv -- the Google Photos library
+    side of the savings (space freed in Kathryn's actual library), distinct
+    from local disk space reclaimed by this script."""
+    with open(batch_dir / "decisions.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    deleted_rows = [r for r in rows if is_delete(r.get("decision", ""))]
+
+    def mb(r: dict) -> float:
+        try:
+            return float(r.get("size_mb") or 0)
+        except ValueError:
+            return 0.0
+
+    return {
+        "total": len(rows),
+        "kept": len(rows) - len(deleted_rows),
+        "deleted": len(deleted_rows),
+        "deleted_mb": round(sum(mb(r) for r in deleted_rows), 1),
+    }
+
+
 def collect_deletion_targets(batch_dir: Path) -> tuple[list[Path], list[Path]]:
     """Return (to_delete, to_keep) as absolute paths."""
     to_delete: list[Path] = []
     for p in batch_dir.iterdir():
-        if p.name in ("decisions.csv", "upload_log.json", ".trashed_confirmed"):
+        if p.name in ("decisions.csv", "upload_log.json", ".trashed_confirmed",
+                      "CLEANUP_SUMMARY.md"):
             continue
         if p.name == "review.html":
             to_delete.append(p)
@@ -103,19 +132,66 @@ def collect_deletion_targets(batch_dir: Path) -> tuple[list[Path], list[Path]]:
     return to_delete, to_keep
 
 
-def human_size(path: Path) -> str:
-    total = 0
+def size_bytes(path: Path) -> int:
     if path.is_dir():
-        for f in path.rglob("*"):
-            if f.is_file():
-                total += f.stat().st_size
-    elif path.is_file():
-        total = path.stat().st_size
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    if path.is_file():
+        return path.stat().st_size
+    return 0
+
+
+def human_size(num_bytes: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
-        if total < 1024:
-            return f"{total:.0f}{unit}"
-        total /= 1024
-    return f"{total:.1f}TB"
+        if num_bytes < 1024:
+            return f"{num_bytes:.0f}{unit}" if unit == "B" else f"{num_bytes:.1f}{unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f}TB"
+
+
+def write_batch_summary(batch_dir: Path, stats: dict, reclaimed_bytes: int,
+                        deleted_names: list[str], when: datetime) -> None:
+    path = batch_dir / "CLEANUP_SUMMARY.md"
+    lines = [
+        f"# Cleanup summary — {batch_dir.name}",
+        "",
+        f"- **Cleaned up:** {when.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"- **Files reviewed:** {stats['total']}",
+        f"- **Kept (uploaded to Google Photos):** {stats['kept']}",
+        f"- **Deleted:** {stats['deleted']} ({stats['deleted_mb']} MB freed in "
+        "the Google Photos library)",
+        f"- **Local disk reclaimed:** {human_size(reclaimed_bytes)}",
+        "",
+        "Local media removed by cleanup:",
+    ]
+    lines += [f"- {name}" for name in deleted_names]
+    lines += [
+        "",
+        "The full per-file record (what was kept/deleted, and confirmation of "
+        "each upload) remains in `decisions.csv` and `upload_log.json` in this "
+        "folder.",
+        "",
+    ]
+    path.write_text("\n".join(lines))
+
+
+def append_cleanup_log(batch_name: str, stats: dict, reclaimed_bytes: int,
+                       when: datetime) -> None:
+    if not CLEANUP_LOG.exists():
+        CLEANUP_LOG.write_text(
+            "# Cleanup history\n\n"
+            "Running record of local disk space reclaimed and Google Photos "
+            "library savings after each batch's `04_cleanup.py` run. "
+            "Aggregate counts only -- no filenames or photo content.\n\n"
+            "| Date | Batch | Reviewed | Kept | Deleted | Library MB freed | "
+            "Local disk reclaimed |\n"
+            "|------|-------|----------|------|---------|-------------------"
+            "|-----------------------|\n"
+        )
+    row = (f"| {when.strftime('%Y-%m-%d')} | {batch_name} | {stats['total']} | "
+          f"{stats['kept']} | {stats['deleted']} | {stats['deleted_mb']} MB | "
+          f"{human_size(reclaimed_bytes)} |\n")
+    with open(CLEANUP_LOG, "a") as f:
+        f.write(row)
 
 
 def main() -> int:
@@ -148,18 +224,26 @@ def main() -> int:
     print(f"Verified: all {keeper_count} keeper file(s) confirmed uploaded "
           "with a real mediaItemId.\n")
 
+    stats = library_stats(batch_dir)
     to_delete, to_keep = collect_deletion_targets(batch_dir)
     if not to_delete:
         print("Nothing to clean up -- no takeout/reupload/zip/review.html "
               "found in this batch folder.")
         return 0
 
+    sizes = {p: size_bytes(p) for p in to_delete}
+    reclaimed_bytes = sum(sizes.values())
+
     print("Will DELETE (local media -- already safely in Google Photos):")
     for p in to_delete:
-        print(f"  - {p.name}  ({human_size(p)})")
+        print(f"  - {p.name}  ({human_size(sizes[p])})")
+    print(f"\nGoogle Photos library savings: {stats['deleted']} of "
+          f"{stats['total']} files deleted ({stats['deleted_mb']} MB)")
+    print(f"Local disk space to be reclaimed: {human_size(reclaimed_bytes)}")
     print("\nWill KEEP (your work record):")
     for p in to_keep:
         print(f"  - {p.name}")
+    print("  - CLEANUP_SUMMARY.md  (written after cleanup)")
 
     if args.dry_run:
         print("\nDRY RUN -- nothing deleted.")
@@ -179,6 +263,7 @@ def main() -> int:
             print("Aborted -- nothing deleted.")
             return 1
 
+    deleted_names = [p.name for p in to_delete]
     for p in to_delete:
         if p.is_dir():
             shutil.rmtree(p)
@@ -186,8 +271,13 @@ def main() -> int:
             p.unlink()
         print(f"  deleted: {p.name}")
 
-    print(f"\nDone. {batch_dir} now contains only decisions.csv and "
-          "upload_log.json (your record of this batch).")
+    when = datetime.now(timezone.utc)
+    write_batch_summary(batch_dir, stats, reclaimed_bytes, deleted_names, when)
+    append_cleanup_log(batch_dir.name, stats, reclaimed_bytes, when)
+
+    print(f"\nDone. {batch_dir} now contains decisions.csv, upload_log.json, "
+          "and CLEANUP_SUMMARY.md (your record of this batch).")
+    print(f"Also appended a row to {CLEANUP_LOG.relative_to(REPO_ROOT)}.")
     return 0
 
 

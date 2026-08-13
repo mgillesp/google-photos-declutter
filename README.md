@@ -99,9 +99,19 @@ Produces `batches/2019-05/review.html` and `batches/2019-05/decisions.csv`.
 ### 4. [SCRIPT] Restore capture dates onto keepers
 ```bash
 python3 scripts/02_restore_exif.py batches/2019-05        # add --dry-run to preview
+python3 scripts/02_restore_exif.py batches/2019-05 --fill-missing-dates
 ```
 Copies every keeper into `batches/2019-05/reupload/` and writes the correct capture
-date (from the Takeout JSON sidecars) into each file via exiftool.
+date (from the Takeout JSON sidecars, falling back to the file's own embedded EXIF)
+into each file via exiftool.
+
+A rare few files have neither — no sidecar match, no EXIF at all. `--fill-missing-dates`
+(off by default) assigns those the **earliest capture date found anywhere in the
+batch's `decisions.csv`**, so they still land somewhere sane in the timeline instead
+of defaulting to the upload date. This is a reasonable assumption for a tightly
+time-scoped batch (one month); for a full-year batch the true earliest could be many
+months off from where the file actually belongs, so review the flagged files
+afterward — the script always reports exactly which ones it applied the fallback to.
 
 ### 5. [YOU — browser] Trash the month in Google Photos
 - Search the same month again, **Select all**, **move to Trash**.
@@ -141,6 +151,13 @@ second safety net. This deletes all of that and keeps only `decisions.csv` and
 confirmed uploaded** (cross-checked against `upload_log.json` with a real
 `mediaItemId`) — if even one keeper is missing or failed, cleanup aborts with a
 list of what's wrong instead of touching any files.
+
+After a successful cleanup it also writes `batches/2019-05/CLEANUP_SUMMARY.md`
+(basic results for that batch: counts, MB freed in the Google Photos library,
+local disk space reclaimed) and appends one row to a repo-root `CLEANUP_LOG.md`
+— a running history across every batch over time. Neither contains filenames or
+photo content, just aggregate counts; `CLEANUP_LOG.md` isn't gitignored, so it's
+safe to commit as a visible project history if you want one.
 
 ---
 

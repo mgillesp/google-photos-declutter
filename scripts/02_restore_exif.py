@@ -15,11 +15,15 @@ CONSERVATIVE BY DESIGN: a file is only skipped if its decision is explicitly
 
 Dates are derived from the sidecar's UTC timestamp and written as that wall-clock
 time; timeline placement is accurate to the day (what Google sorts on). Files with
-no resolvable sidecar date are still copied but reported so you can fix them.
+no resolvable date (no sidecar, no EXIF) are still copied but reported so you can
+fix them -- unless --fill-missing-dates is passed, in which case they're assigned
+the earliest capture date found anywhere in the batch (see that flag's help text
+for when this is and isn't a reasonable assumption).
 
 Usage:
   python3 scripts/02_restore_exif.py batches/2019-05
   python3 scripts/02_restore_exif.py batches/2019-05 --dry-run
+  python3 scripts/02_restore_exif.py batches/2019-05 --fill-missing-dates
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ import csv
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -68,6 +73,15 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=None)
     ap.add_argument("--dry-run", action="store_true",
                     help="Show what would happen without copying or writing")
+    ap.add_argument("--fill-missing-dates", action="store_true",
+                    help="For files with truly NO resolvable date (no sidecar, "
+                    "no EXIF), assign the earliest capture date found anywhere "
+                    "in this batch's decisions.csv (across all reviewed files, "
+                    "not just keepers), instead of leaving them undated. Off by "
+                    "default -- only sensible for a tightly time-scoped batch "
+                    "(e.g. one month); for a full-year batch the 'earliest date' "
+                    "could be many months off from where the file actually "
+                    "belongs, so review the affected files after using this.")
     args = ap.parse_args()
 
     if not shutil.which("exiftool"):
@@ -99,11 +113,35 @@ def main() -> int:
     delete_n = len(rows) - len(keep_rows)
     print(f"{len(rows)} files: {len(keep_rows)} keep, {delete_n} marked delete.\n")
 
+    earliest_in_batch: datetime | None = None
+    if args.fill_missing_dates:
+        # Earliest across the WHOLE reviewed set (every row in decisions.csv,
+        # not just keepers) -- matches "earliest in the set being reviewed".
+        for r in rows:
+            cd = (r.get("capture_date") or "").strip()
+            if not cd:
+                continue
+            try:
+                d = datetime.strptime(cd, "%Y-%m-%d").replace(hour=12, tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if earliest_in_batch is None or d < earliest_in_batch:
+                earliest_in_batch = d
+        if earliest_in_batch is None:
+            print("  ! --fill-missing-dates: no resolvable dates anywhere in "
+                  "decisions.csv to fall back to; date-less files will stay "
+                  "undated.", file=sys.stderr)
+        else:
+            print(f"  --fill-missing-dates enabled: undated files will be "
+                  f"assigned {earliest_in_batch.date().isoformat()} (earliest "
+                  "in this batch)\n")
+
     copied = 0
     dated = 0
     unresolved: list[str] = []
     failed: list[str] = []
     mislabeled: list[str] = []
+    fallback_dated: list[str] = []
 
     for r in keep_rows:
         rel = r["rel_path"]
@@ -115,11 +153,21 @@ def main() -> int:
         is_video = src.suffix.lower() in VIDEO_EXTS
 
         dt = index.capture_dt(src) or media.exif_datetime(src)
+        used_fallback = False
+        if dt is None and earliest_in_batch is not None:
+            dt = earliest_in_batch
+            used_fallback = True
+
         if args.dry_run:
-            tag = dt.date().isoformat() if dt else "NO DATE"
+            if used_fallback:
+                tag = f"{dt.date().isoformat()} (batch-earliest fallback)"
+            else:
+                tag = dt.date().isoformat() if dt else "NO DATE"
             print(f"  keep  {rel}  [{tag}]")
             copied += 1
-            if not dt:
+            if used_fallback:
+                fallback_dated.append(rel)
+            elif not dt:
                 unresolved.append(rel)
             continue
 
@@ -133,7 +181,9 @@ def main() -> int:
                 mislabeled.append(f"{rel} -> {fixed.name}")
                 dest = fixed
 
-        if not dt:
+        if used_fallback:
+            fallback_dated.append(rel)
+        elif not dt:
             unresolved.append(rel)
             continue
 
@@ -158,6 +208,14 @@ def main() -> int:
             print(f"      - {u}")
         if len(mislabeled) > 20:
             print(f"      ... and {len(mislabeled) - 20} more")
+    if fallback_dated:
+        tag = earliest_in_batch.date().isoformat() if earliest_in_batch else "?"
+        print(f"  batch-earliest date  : {len(fallback_dated)} (no sidecar/EXIF "
+              f"date; assigned {tag} via --fill-missing-dates):")
+        for u in fallback_dated[:20]:
+            print(f"      - {u}")
+        if len(fallback_dated) > 20:
+            print(f"      ... and {len(fallback_dated) - 20} more")
     if unresolved:
         print(f"  NO sidecar date     : {len(unresolved)} (copied but NOT re-dated — "
               "these may land at upload time in the timeline):")
