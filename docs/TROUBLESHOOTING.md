@@ -69,8 +69,11 @@ brew install p7zip
 7z x the-file.zip
 ```
 
-Sticking to the default **2GB** file size in Takeout avoids this question
-entirely.
+**Which file size to pick in the first place** depends on how big the batch is,
+not a blanket rule. A single month rarely gets anywhere near 2GB, so the
+setting won't matter — leave it at the default. For a multi-month or full-year
+batch, a bigger size (e.g. 10GB) means far fewer zip parts to move and extract
+by hand, and is worth it once you've confirmed `ZIP64_SUPPORT` above.
 
 ---
 
