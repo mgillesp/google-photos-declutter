@@ -112,12 +112,16 @@ def explain_empty_batch(batch_dir, takeout_dir) -> str:
     """Message for when a batch folder exists but has no media in it."""
     return (
         f"\nNo photos or videos found under:\n  {takeout_dir}\n\n"
-        "This usually means the Takeout zip was extracted one level off. The "
-        "structure should look like:\n\n"
-        f"  {batch_dir}/takeout/Takeout/Google Photos/<album name>/IMG_0001.JPG\n\n"
-        "Check that you extracted the zip INTO the 'takeout' folder rather than "
-        "next to it, and that the download actually finished (a partial Takeout "
-        "zip extracts to an empty or near-empty folder).\n"
+        "This is usually NOT a folder-depth problem -- the search here is "
+        "recursive, so nesting variations under 'takeout/' are handled fine. "
+        "The real cause is almost always one of:\n\n"
+        "  1. An interrupted download: a multi-gigabyte Takeout zip cut off "
+        "partway extracts to an empty or near-empty folder, often without an "
+        "obvious error. Check integrity before extracting next time:\n"
+        "       unzip -t <zip>\n"
+        "  2. The zip was never actually extracted into "
+        f"{batch_dir}/takeout/ at all.\n"
+        "  3. The wrong path was given to this script.\n"
     )
 
 
