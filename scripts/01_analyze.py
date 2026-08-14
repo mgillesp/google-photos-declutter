@@ -449,7 +449,13 @@ def main() -> int:
                   f"({len(raw_video_sim_groups) - len(video_sim_groups)} skipped -- "
                   "already flagged as a video burst)")
 
-    # 4) Blur scoring (images only)
+    # 4) Blur scoring (images only). A photo already shown in a Bursts group
+    # doesn't get a *second* review entry here -- it's already up for review
+    # there, and it's usually the same handful of near-identical shots. The
+    # "blur" flag is still recorded on the record (used by CSV/flags and by
+    # the sharpness tie-break when picking a burst's default keeper); only
+    # the separate "Blur candidates" review.html section is trimmed.
+    already_in_photo_burst = {str(p) for g in burst_groups for p in g}
     print("  - scoring blur (Laplacian variance)...")
     blur_thresh = float(acfg["blur_variance_threshold"])
     blur_candidates = []
@@ -460,7 +466,8 @@ def main() -> int:
         r["blur"] = round(score, 1) if score is not None else None
         if score is not None and score < blur_thresh:
             r["flags"].add("blur")
-            blur_candidates.append(r)
+            if str(r["path"]) not in already_in_photo_burst:
+                blur_candidates.append(r)
     print(f"    blur candidates: {len(blur_candidates)}")
 
     # 5) Oversized videos (reuses the duration probed in step 3b above)
@@ -620,6 +627,35 @@ def _card(r: dict, max_px: int, extra: str = "") -> str:
     )
 
 
+def find_absorbed_sim_groups(sim_tagged, burst_tagged):
+    """Split similar-image groups into (still shown, absorbed into a burst).
+
+    A sim group whose members are ALL also members of one single burst group
+    isn't showing the reviewer anything new -- it's the same handful of shots
+    they're already reviewing as a burst. Rather than a second, redundant
+    "Similar images" block for the identical photos, that sim group is
+    dropped from its own section and the burst group gets a short note
+    instead. Underlying tags/CSV flags are untouched -- this only changes
+    what review.html renders.
+
+    Returns (visible_sim_tagged, burst_extra_sim_gids) where
+    burst_extra_sim_gids maps a burst gid to the list of sim gids absorbed
+    into it.
+    """
+    burst_member_keys = {gid: {m["rel"] for m in members} for gid, members in burst_tagged}
+    visible: list[tuple[str, list[dict]]] = []
+    absorbed_into: dict[str, list[str]] = {}
+    for gid, members in sim_tagged:
+        member_keys = {m["rel"] for m in members}
+        host = next((bgid for bgid, bkeys in burst_member_keys.items()
+                    if member_keys <= bkeys), None)
+        if host is not None:
+            absorbed_into.setdefault(host, []).append(gid)
+        else:
+            visible.append((gid, members))
+    return visible, absorbed_into
+
+
 def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged,
                       burst_tagged, video_burst_tagged, video_sim_tagged,
                       blur_candidates, oversized, text_candidates,
@@ -634,14 +670,19 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
             f'<p class="desc">{html.escape(desc)}</p>{body}</section>'
         )
 
-    def group_block(tagged, note):
+    def group_block(tagged, note, extra_notes=None):
         if not tagged:
             return '<p class="empty">None found.</p>'
         blocks = []
         for gid, members in tagged:
             cards = "".join(_card(m, max_px) for m in members)
+            extra = ""
+            if extra_notes and gid in extra_notes:
+                n = len(extra_notes[gid])
+                extra = (f' · also matched as similar image{"s" if n != 1 else ""} '
+                         f'({", ".join(extra_notes[gid])}) — not shown separately')
             blocks.append(f'<div class="group"><div class="glabel">{html.escape(gid)} '
-                          f'· {len(members)} items — {html.escape(note)}</div>'
+                          f'· {len(members)} items — {html.escape(note)}{html.escape(extra)}</div>'
                           f'<div class="grid">{cards}</div></div>')
         return "".join(blocks)
 
@@ -651,18 +692,23 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
         cards = "".join(_card(r, max_px, extra_fn(r) if extra_fn else "") for r in items)
         return f'<div class="grid">{cards}</div>'
 
+    visible_sim_tagged, burst_absorbed_sims = find_absorbed_sim_groups(sim_tagged, burst_tagged)
+
     section("Exact duplicates",
             "Byte/near-byte identical files. Sharpest/largest is pre-selected to "
             "keep — tap another to change.",
             group_block(dup_tagged, "one is pre-selected to keep"), len(dup_tagged))
     section("Similar images",
             "Visually near-identical. Sharpest is pre-selected to keep — tap "
-            "any to change (tap more than one to keep several).",
-            group_block(sim_tagged, "one is pre-selected to keep"), len(sim_tagged))
+            "any to change (tap more than one to keep several). Groups that are "
+            "entirely the same photos as a burst below aren't repeated here.",
+            group_block(visible_sim_tagged, "one is pre-selected to keep"),
+            len(visible_sim_tagged))
     section("Bursts (by time)",
             "Taken within seconds of each other — likely a burst. Sharpest is "
             "pre-selected to keep.",
-            group_block(burst_tagged, "one is pre-selected to keep"), len(burst_tagged))
+            group_block(burst_tagged, "one is pre-selected to keep",
+                       extra_notes=burst_absorbed_sims), len(burst_tagged))
     section("Video bursts (by time)",
             "Clips recorded back-to-back (accounting for each clip's own "
             "length, not just start time). Largest file is pre-selected to "
