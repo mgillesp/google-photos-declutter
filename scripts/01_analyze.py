@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from lib import media  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.live_photos import find_live_photo_pairs  # noqa: E402
 from lib.preflight import (  # noqa: E402
     check_tools,
     explain_empty_batch,
@@ -357,6 +358,15 @@ def main() -> int:
         print(explain_empty_batch(batch_dir, takeout), file=sys.stderr)
         return 1
 
+    # Live Photo pairing (IMG_1234.HEIC + IMG_1234.MOV = one capture, not two
+    # independent items). Detected up front so record-building below can tag
+    # both halves. {video_rel: photo_rel}
+    pair_live_photos = bool(acfg.get("pair_live_photos", True))
+    live_pairs = find_live_photo_pairs(takeout, media_files) if pair_live_photos else {}
+    if live_pairs:
+        print(f"  - {len(live_pairs)} Live Photo pair(s) detected "
+              "(photo+video treated as one unit)")
+
     # Per-file record
     records: dict[str, dict] = {}
     exif_fallback_used = 0
@@ -381,8 +391,22 @@ def main() -> int:
             "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
             "blur": None,
             "text_words": None,
+            "live_photo_partner": None,
             "flags": set(),
         }
+
+    # Tag both halves of each pair with each other's rel path, so the photo
+    # can show a "+video" badge and the video can be excluded from
+    # video-dedup candidacy below. Keys reconstructed from media_files
+    # directly (not by re-joining takeout/rel) to avoid any path-
+    # normalization mismatch with how `records` itself is keyed.
+    rel_to_key = {str(p.relative_to(takeout)): str(p) for p in media_files}
+    for video_rel, photo_rel in live_pairs.items():
+        video_key = rel_to_key.get(video_rel)
+        photo_key = rel_to_key.get(photo_rel)
+        if video_key in records and photo_key in records:
+            records[video_key]["live_photo_partner"] = photo_rel
+            records[photo_key]["live_photo_partner"] = video_rel
 
     if exif_fallback_used:
         print(f"    NOTE: {exif_fallback_used} files had no sidecar match; "
@@ -420,6 +444,15 @@ def main() -> int:
     # 3c) Burst clustering among videos, accounting for each clip's own
     # duration (see cluster_video_bursts docstring) -- a wider window than
     # photos by default since videos naturally space out more.
+    #
+    # Live Photo videos are excluded from candidacy here and from the
+    # similarity pass below entirely -- they're not independent clips, and
+    # a phone's worth of ~3-second Live Photo videos would otherwise flood
+    # both passes with near-identical short clips that were never meant to
+    # be compared against each other.
+    dedup_eligible_video_records = [r for r in video_records if not r["live_photo_partner"]]
+    skipped_live_photo_videos = len(video_records) - len(dedup_eligible_video_records)
+
     video_burst_groups: list[list[Path]] = []
     video_sim_groups: list[list[str]] = []
     if args.skip_video_dedup:
@@ -427,27 +460,39 @@ def main() -> int:
             print(f"  - skipping video burst/similarity detection (--skip-video-dedup, "
                   f"{len(video_records)} video(s) affected)")
     else:
-        vid_times = [(r["path"], r["epoch"], r.get("duration")) for r in video_records]
+        if skipped_live_photo_videos:
+            print(f"  - excluding {skipped_live_photo_videos} Live Photo video(s) "
+                  "from video-dedup candidacy")
+        vid_times = [(r["path"], r["epoch"], r.get("duration"))
+                    for r in dedup_eligible_video_records]
         video_burst_groups = cluster_video_bursts(
             vid_times, int(acfg["video_burst_window_seconds"]))
         print(f"  - video burst groups: {len(video_burst_groups)}")
 
         # 3d) Similar videos (czkawka content-hash comparison). Skip videos
-        # already caught by the timestamp-burst pass above -- they're already
-        # flagged for review, so there's no need to also flag them here and
-        # show the same clip in two different sections.
-        if video_records:
+        # already caught by the timestamp-burst pass above (already flagged
+        # for review, no need to show the same clip in two sections) and
+        # Live Photo videos (never dedup-eligible at all). czkawka scans the
+        # whole directory regardless, so both exclusions are applied to its
+        # raw results afterward rather than by restricting what it scans.
+        if dedup_eligible_video_records:
             vid_tolerance = str(acfg["czkawka_video_tolerance"])
             print(f"  - running czkawka similar-video detection (tolerance {vid_tolerance})...")
             raw_video_sim_groups = run_czkawka("video", takeout, ["-t", vid_tolerance])
             already_burst = {str(p) for g in video_burst_groups for p in g}
+            live_photo_video_keys = {str(r["path"]) for r in video_records
+                                     if r["live_photo_partner"]}
+            excluded = already_burst | live_photo_video_keys
             for g in raw_video_sim_groups:
-                remaining = [k for k in g if k not in already_burst]
+                remaining = [k for k in g if k not in excluded]
                 if len(remaining) >= 2:
                     video_sim_groups.append(remaining)
             print(f"    similar-video groups: {len(video_sim_groups)} "
                   f"({len(raw_video_sim_groups) - len(video_sim_groups)} skipped -- "
-                  "already flagged as a video burst)")
+                  "already flagged as a video burst or a Live Photo video)")
+        elif video_records:
+            print("  - skipping similar-video detection (all videos are Live "
+                  "Photo videos, not independently dedup-eligible)")
 
     # 4) Blur scoring (images only). A photo already shown in a Bursts group
     # doesn't get a *second* review entry here -- it's already up for review
@@ -549,6 +594,17 @@ def main() -> int:
     compute_default_decisions(records, dup_tagged, sim_tagged, burst_tagged,
                               video_burst_tagged, video_sim_tagged)
 
+    # Live Photo pairs: the photo governs, always. Not folded into the
+    # union-find clustering above, because that clustering's sharpest/
+    # largest tie-break has no sensible meaning for a photo+video pair --
+    # "largest file" would frequently just mean "keep the video, delete the
+    # photo," which is backwards. Explicit override instead.
+    for video_rel, photo_rel in live_pairs.items():
+        video_key = rel_to_key.get(video_rel)
+        photo_key = rel_to_key.get(photo_rel)
+        if video_key in records and photo_key in records:
+            records[video_key]["default_decision"] = records[photo_key]["default_decision"]
+
     # Write outputs
     csv_path = out_dir / "decisions.csv"
     html_path = out_dir / "review.html"
@@ -603,7 +659,7 @@ def _thumb(r: dict, max_px: int) -> str:
     return '<div class="noimg">no preview</div>'
 
 
-def _card(r: dict, max_px: int, extra: str = "") -> str:
+def _card(r: dict, max_px: int, extra: str = "", rel_index: dict | None = None) -> str:
     meta = html.escape(r["name"])
     sub = []
     if r["capture_date"]:
@@ -613,12 +669,23 @@ def _card(r: dict, max_px: int, extra: str = "") -> str:
         sub.append(f'blur {r["blur"]}')
     if extra:
         sub.append(extra)
+    live_badge = ""
+    partner_rel = r.get("live_photo_partner")
+    # Only the photo half gets the badge/caption -- the video half never
+    # gets its own card anywhere, so this branch never fires for it.
+    if partner_rel and not r["is_video"] and rel_index is not None:
+        partner = rel_index.get(partner_rel)
+        if partner:
+            sub.append(f'Live Photo (+{partner["size_mb"]}MB video)')
+            live_badge = (f'<span class="live-badge" '
+                         f'title="Includes {html.escape(partner["name"])}">LIVE</span>')
     rid = html.escape(r["rel"], quote=True)
     default = "delete" if r.get("default_decision") == "delete" else "keep"
     return (
-        f'<figure class="card" data-id="{rid}" data-default="{default}">'
+        f'<figure class="card" data-id="{rid}" data-default="{default}" tabindex="-1">'
         f'<div class="thumb">{_thumb(r, max_px)}'
         f'<div class="mark"></div>'
+        f'{live_badge}'
         f'<button class="zoom" type="button" data-zoom="{rid}" '
         f'title="View larger" aria-label="View larger">&#128269;</button>'
         f'</div>'
@@ -662,6 +729,7 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
                       junk, acfg) -> None:
     max_px = int(acfg["thumbnail_max_px"])
     parts: list[str] = []
+    rel_index = {r["rel"]: r for r in records.values()}
 
     def section(title: str, desc: str, body: str, count: int):
         parts.append(
@@ -675,7 +743,7 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
             return '<p class="empty">None found.</p>'
         blocks = []
         for gid, members in tagged:
-            cards = "".join(_card(m, max_px) for m in members)
+            cards = "".join(_card(m, max_px, rel_index=rel_index) for m in members)
             extra = ""
             if extra_notes and gid in extra_notes:
                 n = len(extra_notes[gid])
@@ -689,7 +757,8 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
     def flat_block(items, extra_fn=None):
         if not items:
             return '<p class="empty">None found.</p>'
-        cards = "".join(_card(r, max_px, extra_fn(r) if extra_fn else "") for r in items)
+        cards = "".join(_card(r, max_px, extra_fn(r) if extra_fn else "", rel_index=rel_index)
+                        for r in items)
         return f'<div class="grid">{cards}</div>'
 
     visible_sim_tagged, burst_absorbed_sims = find_absorbed_sim_groups(sim_tagged, burst_tagged)
@@ -812,6 +881,9 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
           border-radius: 50%; border: none; background: #000a; color: #fff;
           font-size: 13px; cursor: zoom-in; display: flex; align-items: center;
           justify-content: center; padding: 0; }}
+  .live-badge {{ position: absolute; top: 5px; right: 5px; background: #000a;
+                color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .04em;
+                padding: .2em .5em; border-radius: 1em; pointer-events: none; }}
   figcaption {{ padding: .35rem .45rem; font-size: .72rem; }}
   .fn {{ display: block; font-weight: 600; word-break: break-all; }}
   .mt {{ color: #888; }}
@@ -836,6 +908,18 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
            background: canvastext; color: canvas; padding: .6rem 1.1rem; border-radius: 6px;
            font-size: .85rem; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 60; }}
   #toast.show {{ opacity: 1; }}
+  .card.kbd-focus {{ outline: 3px solid #2a6df4; outline-offset: 2px; }}
+  #help-overlay {{ position: fixed; inset: 0; background: #000a; z-index: 110;
+                  display: none; align-items: center; justify-content: center; }}
+  #help-overlay.open {{ display: flex; }}
+  #help-overlay .box {{ background: canvas; color: canvastext; border-radius: 10px;
+                       padding: 1.5rem 2rem; max-width: 420px; box-shadow: 0 10px 40px #0008; }}
+  #help-overlay h3 {{ margin-top: 0; }}
+  #help-overlay table {{ border-collapse: collapse; width: 100%; }}
+  #help-overlay td {{ padding: .3rem 0; font-size: .88rem; }}
+  #help-overlay td:first-child {{ font-family: ui-monospace, monospace; color: #2a6df4;
+                                  white-space: nowrap; padding-right: 1rem; }}
+  #help-overlay .close-hint {{ margin-top: 1rem; color: #888; font-size: .8rem; }}
 </style></head><body>
 <div id="toolbar">
   <strong>📸 {html.escape(batch_label)}</strong>
@@ -844,6 +928,7 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
     <b id="cnt-mb">0</b> MB freed</span>
   <span class="spacer"></span>
   <button type="button" class="secondary" id="btn-reset">Reset to suggested</button>
+  <button type="button" class="secondary" id="btn-help">⌨ Shortcuts (?)</button>
   <button type="button" id="btn-download">⬇ Download decisions.csv</button>
 </div>
 <header>
@@ -864,6 +949,18 @@ def write_review_html(path: Path, takeout: Path, records, dup_tagged, sim_tagged
 Generated by google-photos-declutter · deterministic local analysis.
 </footer>
 <div id="lightbox"><img id="lightbox-img" alt=""></div>
+<div id="help-overlay"><div class="box">
+  <h3>Keyboard shortcuts</h3>
+  <table>
+    <tr><td>&#8595; / &#8594; / j</td><td>Next photo</td></tr>
+    <tr><td>&#8593; / &#8592; / k</td><td>Previous photo</td></tr>
+    <tr><td>Space</td><td>Toggle keep / delete</td></tr>
+    <tr><td>Enter</td><td>Accept this group as-is, jump to the next one</td></tr>
+    <tr><td>?</td><td>Toggle this help</td></tr>
+    <tr><td>Esc</td><td>Close lightbox / this help</td></tr>
+  </table>
+  <p class="close-hint">Shortcuts are disabled while the lightbox is open.</p>
+</div></div>
 <div id="toast"></div>
 <script id="all-records" type="application/json">{records_json}</script>
 <script>
@@ -879,6 +976,11 @@ Generated by google-photos-declutter · deterministic local analysis.
     var saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{{}}");
     if (saved && typeof saved === "object") state = saved;
   }} catch (e) {{ state = {{}}; }}
+
+  // Keyboard review: allCards is a snapshot in DOM order (the page never
+  // adds/removes cards after load, so this is safe to build once).
+  var allCards = [];
+  var focusedIndex = -1;
 
   // localStorage can throw on file:// pages in some browsers (e.g. Safari).
   // Treat it as best-effort persistence: toggling must still work for the
@@ -964,11 +1066,95 @@ Generated by google-photos-declutter · deterministic local analysis.
       return;
     }}
     if (e.target.closest("#lightbox")) {{ closeLightbox(); return; }}
+    if (e.target.closest("#help-overlay")) {{ hideHelp(); return; }}
     var card = e.target.closest(".card[data-id]");
     if (card) toggle(card.getAttribute("data-id"));
   }});
+
+  // --- Keyboard review -------------------------------------------------
+  // A "unit" is the group a card belongs to (the .group div for dup/
+  // similar/burst sections) or, for flat single-item sections (blur,
+  // oversized video, text-heavy, junk) where there's no multi-item group
+  // to move past, the card itself -- so Enter there behaves like "next
+  // item" instead of skipping the whole section.
+  function cardUnit(card) {{
+    return card.closest(".group") || card;
+  }}
+
+  function setFocus(index) {{
+    if (allCards.length === 0) return;
+    index = Math.max(0, Math.min(allCards.length - 1, index));
+    if (focusedIndex >= 0 && allCards[focusedIndex]) {{
+      allCards[focusedIndex].classList.remove("kbd-focus");
+    }}
+    focusedIndex = index;
+    var card = allCards[focusedIndex];
+    card.classList.add("kbd-focus");
+    card.focus({{preventScroll: true}});
+    card.scrollIntoView({{block: "center", behavior: "smooth"}});
+  }}
+
+  function moveFocus(delta) {{
+    if (focusedIndex < 0) {{ setFocus(0); return; }}
+    setFocus(focusedIndex + delta);
+  }}
+
+  function toggleFocused() {{
+    if (focusedIndex < 0 || !allCards[focusedIndex]) {{ setFocus(0); return; }}
+    toggle(allCards[focusedIndex].getAttribute("data-id"));
+  }}
+
+  function acceptGroupAndAdvance() {{
+    if (focusedIndex < 0 || !allCards[focusedIndex]) {{ setFocus(0); return; }}
+    var unit = cardUnit(allCards[focusedIndex]);
+    var next = -1;
+    for (var i = focusedIndex + 1; i < allCards.length; i++) {{
+      if (cardUnit(allCards[i]) !== unit) {{ next = i; break; }}
+    }}
+    if (next === -1) {{
+      toast("That's the last group.");
+      return;
+    }}
+    setFocus(next);
+  }}
+
+  function showHelp() {{ document.getElementById("help-overlay").classList.add("open"); }}
+  function hideHelp() {{ document.getElementById("help-overlay").classList.remove("open"); }}
+
+  document.getElementById("btn-help").addEventListener("click", showHelp);
+
   document.addEventListener("keydown", function(e) {{
-    if (e.key === "Escape") closeLightbox();
+    if (e.key === "Escape") {{
+      if (document.getElementById("help-overlay").classList.contains("open")) {{
+        hideHelp();
+      }} else {{
+        closeLightbox();
+      }}
+      return;
+    }}
+
+    // Disabled while the lightbox or help overlay is open, or while focus
+    // is in a text field -- the page has none today, but this keeps the
+    // shortcuts from ever hijacking typing if one gets added later.
+    var lightboxOpen = document.getElementById("lightbox").classList.contains("open");
+    var helpOpen = document.getElementById("help-overlay").classList.contains("open");
+    var active = document.activeElement;
+    var inTextField = active && (["INPUT", "TEXTAREA", "SELECT"].indexOf(active.tagName) !== -1
+                      || active.isContentEditable);
+    if (lightboxOpen || helpOpen || inTextField) return;
+
+    switch (e.key) {{
+      case "ArrowDown": case "ArrowRight": case "j": case "J":
+        e.preventDefault(); moveFocus(1); break;
+      case "ArrowUp": case "ArrowLeft": case "k": case "K":
+        e.preventDefault(); moveFocus(-1); break;
+      case " ":
+        e.preventDefault(); toggleFocused(); break;
+      case "Enter":
+        e.preventDefault(); acceptGroupAndAdvance(); break;
+      case "?":
+        e.preventDefault(); showHelp(); break;
+    }}
   }});
 
   document.getElementById("btn-reset").addEventListener("click", function() {{
@@ -1047,6 +1233,7 @@ Generated by google-photos-declutter · deterministic local analysis.
     toastTimer = setTimeout(function() {{ el.classList.remove("show"); }}, 3200);
   }}
 
+  allCards = Array.prototype.slice.call(document.querySelectorAll(".card[data-id]"));
   refreshAll();
 }})();
 </script>

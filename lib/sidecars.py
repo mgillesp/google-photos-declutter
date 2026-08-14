@@ -72,30 +72,51 @@ class SidecarIndex:
         return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
 
+def _iter_stem_reductions(stem: str):
+    """Yield each progressively-reduced form of a filename stem.
+
+    Strips Google's "-edited" suffix and a trailing "(n)" duplicate index,
+    iteratively and in either order/combination, so a COMPOUND suffix like
+    "-edited(1)" fully reduces to the original base instead of stopping
+    after only one stripping pass:  IMG_1234-edited(1) -> IMG_1234-edited
+    -> IMG_1234.
+
+    Shared by sidecar title matching (_title_candidates, which wants every
+    intermediate form as a fuzzy-match candidate) and Live Photo pairing
+    (reduce_stem, which wants only the final fully-reduced form) so both
+    treat filename suffix variants identically -- one algorithm, not two.
+    """
+    base = stem
+    changed = True
+    while changed:
+        changed = False
+        new_base = _EDITED_SUFFIX.sub("", base)
+        if new_base != base:
+            base = new_base
+            yield base
+            changed = True
+        m = re.match(r"^(.*)\(\d+\)$", base)
+        if m and m.group(1) != base:
+            base = m.group(1)
+            yield base
+            changed = True
+
+
+def reduce_stem(stem: str) -> str:
+    """The fully-reduced form of a filename stem (see _iter_stem_reductions)."""
+    reduced = stem
+    for reduced in _iter_stem_reductions(stem):
+        pass
+    return reduced
+
+
 def _title_candidates(media_name: str) -> list[str]:
     """Original-name variants to try matching against sidecar `title` fields."""
     cands = [media_name]
     stem, dot, ext = media_name.rpartition(".")
     if dot:
-        # Iteratively strip Google's "-edited" suffix and a trailing "(n)"
-        # duplicate index, in either order/combination, so a COMPOUND suffix
-        # like "-edited(1)" fully reduces to the original base name instead
-        # of stopping after only one stripping pass:
-        #   IMG_1234-edited(1) -> IMG_1234-edited -> IMG_1234
-        base = stem
-        changed = True
-        while changed:
-            changed = False
-            new_base = _EDITED_SUFFIX.sub("", base)
-            if new_base != base:
-                base = new_base
-                cands.append(f"{base}.{ext}")
-                changed = True
-            m = re.match(r"^(.*)\(\d+\)$", base)
-            if m and m.group(1) != base:
-                base = m.group(1)
-                cands.append(f"{base}.{ext}")
-                changed = True
+        for reduced in _iter_stem_reductions(stem):
+            cands.append(f"{reduced}.{ext}")
     # De-dupe preserving order
     seen: set[str] = set()
     out = []

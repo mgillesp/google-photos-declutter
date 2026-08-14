@@ -1,0 +1,5 @@
+# Dev-only. Install alongside requirements.txt to run the test suite:
+#   pip3 install -r requirements.txt -r requirements-dev.txt
+#   python3 -m pytest tests/
+-r requirements.txt
+pytest>=8.0

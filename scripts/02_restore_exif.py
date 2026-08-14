@@ -40,8 +40,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from lib import media  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.live_photos import find_live_photo_pairs  # noqa: E402
 from lib.preflight import check_tools, explain_missing_takeout  # noqa: E402
-from lib.sidecars import VIDEO_EXTS, build_index  # noqa: E402
+from lib.sidecars import VIDEO_EXTS, build_index, iter_media  # noqa: E402
 
 DELETE_TOKENS = {"delete", "del", "d", "x", "remove", "rm", "trash", "no"}
 
@@ -109,14 +110,37 @@ def main() -> int:
 
     cfg = load_config(args.config)
     write_tags = cfg["exif"]["write_tags"]
+    pair_live_photos = bool(cfg["analysis"].get("pair_live_photos", True))
 
     print("Indexing sidecars for capture dates...")
     index = build_index(takeout)
 
+    # Live Photo pairs re-detected directly from the files present (not read
+    # from decisions.csv) so pairing is correct even against a hand-edited
+    # CSV that doesn't understand pairing at all.
+    live_pairs: dict[str, str] = {}  # {video_rel: photo_rel}
+    if pair_live_photos:
+        live_pairs = find_live_photo_pairs(takeout, list(iter_media(takeout)))
+        if live_pairs:
+            print(f"  {len(live_pairs)} Live Photo pair(s) detected; the photo's "
+                  "decision governs each pair.")
+
     with open(decisions_csv, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
-    keep_rows = [r for r in rows if not is_delete(r.get("decision", ""))]
+    decision_by_rel = {r["rel_path"]: r.get("decision", "") for r in rows}
+
+    def effective_decision(rel: str) -> str:
+        """The photo governs a Live Photo pair. A paired video's OWN
+        decision cell is ignored in favor of its photo partner's, so a
+        partial hand-edit (or a stale default in just one of the two rows)
+        can't orphan one half of the pair."""
+        photo_rel = live_pairs.get(rel)
+        if photo_rel is not None and photo_rel in decision_by_rel:
+            return decision_by_rel[photo_rel]
+        return decision_by_rel.get(rel, "")
+
+    keep_rows = [r for r in rows if not is_delete(effective_decision(r["rel_path"]))]
     delete_n = len(rows) - len(keep_rows)
     print(f"{len(rows)} files: {len(keep_rows)} keep, {delete_n} marked delete.\n")
 
@@ -160,6 +184,14 @@ def main() -> int:
         is_video = src.suffix.lower() in VIDEO_EXTS
 
         dt = index.capture_dt(src) or media.exif_datetime(src)
+        if dt is None and rel in live_pairs:
+            # A paired video with no resolvable date of its own (Live Photo
+            # MOVs sometimes lack useful metadata) borrows its photo
+            # partner's date -- same capture moment, and the photo's date is
+            # usually the more reliable of the two (real sidecar/EXIF).
+            photo_src = takeout / live_pairs[rel]
+            if photo_src.exists():
+                dt = index.capture_dt(photo_src) or media.exif_datetime(photo_src)
         used_fallback = False
         if dt is None and earliest_in_batch is not None:
             dt = earliest_in_batch
