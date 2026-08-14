@@ -23,8 +23,8 @@ copies are gone, a script bug or a value mismatch can't be caught by hand
 before it costs someone a real photo.
 
 Usage:
-  python3 scripts/04_cleanup.py batches/2014-08 --dry-run   # preview only
-  python3 scripts/04_cleanup.py batches/2014-08             # asks to confirm
+  python3 scripts/04_cleanup.py batches/2019-05 --dry-run   # preview only
+  python3 scripts/04_cleanup.py batches/2019-05             # asks to confirm
 """
 from __future__ import annotations
 

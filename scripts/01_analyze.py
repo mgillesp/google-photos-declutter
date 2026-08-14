@@ -314,6 +314,11 @@ def main() -> int:
                     help="Batch dir (batches/YYYY-MM) or extracted takeout dir")
     ap.add_argument("--ollama", action="store_true",
                     help="Also run the local Ollama vision junk-classification pass")
+    ap.add_argument("--skip-video-dedup", action="store_true",
+                    help="Skip video-burst clustering and czkawka similar-video "
+                    "detection. These are the slowest passes on a batch with many "
+                    "or long videos. Oversized-video flagging still runs -- this "
+                    "only skips the dedup-focused passes.")
     ap.add_argument("--config", type=Path, default=None)
     args = ap.parse_args()
 
@@ -415,28 +420,34 @@ def main() -> int:
     # 3c) Burst clustering among videos, accounting for each clip's own
     # duration (see cluster_video_bursts docstring) -- a wider window than
     # photos by default since videos naturally space out more.
-    vid_times = [(r["path"], r["epoch"], r.get("duration")) for r in video_records]
-    video_burst_groups = cluster_video_bursts(
-        vid_times, int(acfg["video_burst_window_seconds"]))
-    print(f"  - video burst groups: {len(video_burst_groups)}")
-
-    # 3d) Similar videos (czkawka content-hash comparison). Skip videos
-    # already caught by the timestamp-burst pass above -- they're already
-    # flagged for review, so there's no need to also flag them here and
-    # show the same clip in two different sections.
+    video_burst_groups: list[list[Path]] = []
     video_sim_groups: list[list[str]] = []
-    if video_records:
-        vid_tolerance = str(acfg["czkawka_video_tolerance"])
-        print(f"  - running czkawka similar-video detection (tolerance {vid_tolerance})...")
-        raw_video_sim_groups = run_czkawka("video", takeout, ["-t", vid_tolerance])
-        already_burst = {str(p) for g in video_burst_groups for p in g}
-        for g in raw_video_sim_groups:
-            remaining = [k for k in g if k not in already_burst]
-            if len(remaining) >= 2:
-                video_sim_groups.append(remaining)
-        print(f"    similar-video groups: {len(video_sim_groups)} "
-              f"({len(raw_video_sim_groups) - len(video_sim_groups)} skipped -- "
-              "already flagged as a video burst)")
+    if args.skip_video_dedup:
+        if video_records:
+            print(f"  - skipping video burst/similarity detection (--skip-video-dedup, "
+                  f"{len(video_records)} video(s) affected)")
+    else:
+        vid_times = [(r["path"], r["epoch"], r.get("duration")) for r in video_records]
+        video_burst_groups = cluster_video_bursts(
+            vid_times, int(acfg["video_burst_window_seconds"]))
+        print(f"  - video burst groups: {len(video_burst_groups)}")
+
+        # 3d) Similar videos (czkawka content-hash comparison). Skip videos
+        # already caught by the timestamp-burst pass above -- they're already
+        # flagged for review, so there's no need to also flag them here and
+        # show the same clip in two different sections.
+        if video_records:
+            vid_tolerance = str(acfg["czkawka_video_tolerance"])
+            print(f"  - running czkawka similar-video detection (tolerance {vid_tolerance})...")
+            raw_video_sim_groups = run_czkawka("video", takeout, ["-t", vid_tolerance])
+            already_burst = {str(p) for g in video_burst_groups for p in g}
+            for g in raw_video_sim_groups:
+                remaining = [k for k in g if k not in already_burst]
+                if len(remaining) >= 2:
+                    video_sim_groups.append(remaining)
+            print(f"    similar-video groups: {len(video_sim_groups)} "
+                  f"({len(raw_video_sim_groups) - len(video_sim_groups)} skipped -- "
+                  "already flagged as a video burst)")
 
     # 4) Blur scoring (images only)
     print("  - scoring blur (Laplacian variance)...")

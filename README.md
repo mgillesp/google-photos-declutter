@@ -75,14 +75,17 @@ it's worth asking how they're getting that access.
 - Python 3.10+
 - Comfort with a terminal
 - Homebrew, for four command-line tools
+- Free disk space of roughly 2–3x the size of the month you're processing — a batch
+  briefly holds the Takeout zip, the extracted copy, and the staged re-upload copy at
+  once. `scripts/04_cleanup.py` reclaims it once a batch is verified uploaded.
 
 ## Install
 
 ```bash
 brew install czkawka exiftool ffmpeg tesseract
-git clone https://github.com/<your-username>/google-photos-declutter.git
+git clone https://github.com/mgillesp/google-photos-declutter.git
 cd google-photos-declutter
-pip3 install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 Then follow [`docs/GOOGLE_CLOUD_SETUP.md`](docs/GOOGLE_CLOUD_SETUP.md) for the
@@ -121,7 +124,9 @@ Everything under `batches/` is gitignored.
 python3 scripts/01_analyze.py batches/2019-05
 ```
 
-Add `--ollama` for the optional local vision pass. Produces `review.html` and
+Add `--ollama` for the optional local vision pass. Add `--skip-video-dedup` to skip
+video-burst/similar-video detection (the slowest passes on a batch with many or long
+videos) — oversized-video flagging still runs. Produces `review.html` and
 `decisions.csv`.
 
 ### 3. [YOU] Review
@@ -224,8 +229,12 @@ scripts/04_cleanup.py       reclaim local disk space after a verified batch
 lib/                        sidecar matching, HEIC media, config, preflight checks
 config.example.yaml         tunable thresholds
 docs/GOOGLE_CLOUD_SETUP.md  one-time Google Cloud / OAuth click-through
+docs/TROUBLESHOOTING.md     common errors and how to fix them
 batches/<YYYY-MM>/          per-batch working dir (gitignored)
 ```
+
+Hitting an error? Check [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) first —
+it covers the errors people actually run into, symptom → cause → fix.
 
 ## Notes & limitations
 
