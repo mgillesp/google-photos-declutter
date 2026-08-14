@@ -52,6 +52,26 @@ Needs 3.10+. Check: `python3 --version`. On macOS the system Python is often old
 than the Homebrew one; `brew install python@3.12` and use `python3.12` explicitly
 if needed.
 
+### Zip file won't extract, or extracts to nothing (large export)
+
+If you requested a Takeout file size larger than 2GB, Google delivers it as
+**Zip64** rather than a regular zip — Google's own export screen warns that
+older systems may not support this format. Check whether your `unzip` does:
+
+```bash
+unzip -v | grep ZIP64_SUPPORT
+```
+
+If that prints nothing, your `unzip` can't open it:
+
+```bash
+brew install p7zip
+7z x the-file.zip
+```
+
+Sticking to the default **2GB** file size in Takeout avoids this question
+entirely.
+
 ---
 
 ## Analysis (`01_analyze.py`)
