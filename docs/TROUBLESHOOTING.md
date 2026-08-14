@@ -40,6 +40,12 @@ actually extracted into `batches/<month>/takeout/`.
 **It's taking a long time:** normal on a few thousand photos — the duplicate
 and similar-image passes are the slow part. Not hung.
 
+**A Live Photo's video isn't showing up in the burst/similar-video groups:**
+intentional, not a bug. It's paired with its photo (see [Live Photo
+pairing](../README.md#live-photo-pairing) in the README) and excluded from
+those passes so it doesn't flood them with near-identical clips. The photo's
+decision governs both files.
+
 ## Date restore (`02_restore_exif.py`)
 
 **"No decisions file found":** you clicked **Download decisions.csv** in

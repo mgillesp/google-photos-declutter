@@ -28,12 +28,18 @@ family's library a month at a time.
 
 - **Exact duplicates and near-identical shots** — perceptual hashing via czkawka
 - **Burst sequences** grouped, with the sharpest frame pre-selected to keep
+- **Live Photos paired** — an iPhone's HEIC+MOV (or Android's JPG+MP4) is treated
+  as one capture, not two independent files, so a keep/delete decision never
+  orphans one half and the video doesn't pollute the burst/similarity passes
 - **Blurry photos** scored by Laplacian variance
 - **Oversized videos** flagged so you can move them somewhere cheaper
 - **Screenshots and photographed documents** spotted by local OCR
-- **An offline review page** — tap to keep or delete, with a running MB-freed total
+- **An offline review page** — keyboard or mouse, tap/press to keep or delete, with
+  a running MB-freed total
 - **Original capture dates preserved**, so keepers land back in the right place in
   your timeline rather than all appearing as "today"
+- **A read-only status command** across every batch — where each one stands, and
+  how much you've freed cumulatively
 
 Nothing is deleted without you reviewing it first, and Google's 60-day trash is
 your undo.
@@ -142,11 +148,19 @@ own length shouldn't count against it — see `video_burst_window_seconds` in
 `config.yaml`). Videos already caught by a video burst are skipped in the
 similar-videos pass so the same clip doesn't show up flagged twice.
 
-Tap a photo to toggle keep (✓) / delete (✕). Duplicate, similar and burst groups
-start with the sharpest shot pre-selected — tap another if you'd rather keep a
-different one, or several to keep more than one. Single-item flags default to
-keep. **Anything not shown on the page is kept automatically**, so you only
-review what's flagged.
+Tap a photo to toggle keep (✓) / delete (✕), or use the keyboard: arrow keys /
+j / k to move between items, space to toggle, Enter to accept a group's
+defaults and jump to the next group, and **?** for the full shortcut list
+(disabled while the zoomed-in view is open). Duplicate, similar and burst
+groups start with the sharpest shot pre-selected — tap another if you'd rather
+keep a different one, or several to keep more than one. Single-item flags
+default to keep. **Anything not shown on the page is kept automatically**, so
+you only review what's flagged.
+
+A **LIVE** badge marks the still half of an iPhone Live Photo — its paired
+video is bundled with it rather than shown separately, and whichever way you
+decide the photo applies to both (see [Live Photo pairing](#live-photo-pairing)
+below).
 
 When done, click **⬇ Download decisions.csv**, then move it into the batch
 folder:
@@ -197,6 +211,46 @@ python3 scripts/04_cleanup.py batches/2019-05
 
 Reclaims local disk space once you've verified the month looks right.
 
+### Checking your progress
+
+At the start of a session, or any time you want the big picture across every
+batch:
+
+```bash
+python3 scripts/00_status.py
+```
+
+One row per batch — stage, file count, how many are flagged for deletion —
+plus a running total of months fully finished (trash confirmed) and space
+freed. Strictly read-only; it never modifies a batch. `--json` gives the same
+data in machine-readable form.
+
+---
+
+## Live Photo pairing
+
+An iPhone Live Photo exports from Takeout as two files for one capture —
+`IMG_1234.HEIC` + `IMG_1234.MOV` — not two independent items (Android's
+JPG+MP4 pairs the same way). Left alone, that causes two problems: deleting
+one half orphans the other, and a phone's worth of ~3-second Live Photo
+videos floods the video-burst and similar-video passes with near-identical
+clips that were never meant to be compared against each other.
+
+With `analysis.pair_live_photos: true` (the default), a pair is detected by
+same directory + same filename stem (Takeout's `-edited`/`(1)` suffix
+variants are normalized the same way sidecar matching already handles them)
+with exactly one image extension and one video extension. Once paired:
+
+- the video is excluded from video-burst/similar-video candidacy entirely
+- the photo's keep/delete decision governs both files
+- `review.html` shows a **LIVE** badge on the photo half
+- `02_restore_exif.py` stages and date-stamps both files together, and
+  re-detects pairing directly from the files on disk (not from
+  `decisions.csv`) so a hand-edited or partially-stale CSV can't orphan one
+  half
+
+Turn it off in `config.yaml` if it's misfiring on your library.
+
 ---
 
 ## Guided setup — $14
@@ -222,11 +276,14 @@ Entirely optional. Everything you need to use this tool is in this repo.
 ## Repo layout
 
 ```
+scripts/00_status.py        read-only status across every batch
 scripts/01_analyze.py       analysis + offline review-sheet generator
 scripts/02_restore_exif.py  copy keepers + bake in correct capture dates
 scripts/03_upload.py        OAuth + Photos API re-upload
 scripts/04_cleanup.py       reclaim local disk space after a verified batch
-lib/                        sidecar matching, HEIC media, config, preflight checks
+lib/                        sidecar matching, Live Photo pairing, HEIC media,
+                             config, preflight checks
+tests/                      pytest suite
 config.example.yaml         tunable thresholds
 docs/GOOGLE_CLOUD_SETUP.md  one-time Google Cloud / OAuth click-through
 docs/TROUBLESHOOTING.md     common errors and how to fix them

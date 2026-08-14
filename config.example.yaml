@@ -39,6 +39,16 @@ analysis:
   thumbnail_max_px: 320        # longest edge of each thumbnail (kept small so the HTML
                                # stays reasonable even with hundreds of items)
 
+  # --- Live Photo pairing ---
+  # An iPhone Live Photo exports from Takeout as two files for one capture
+  # (e.g. IMG_1234.HEIC + IMG_1234.MOV, or JPG+MP4 on Android). When true,
+  # these are detected and treated as a single unit: the photo's keep/delete
+  # decision governs both, and the video half is excluded from the
+  # video-burst and similar-video passes (otherwise a phone's worth of
+  # ~3-second Live Photo videos floods those passes with near-identical
+  # clips). Turn off only if this is misfiring on your library.
+  pair_live_photos: true
+
   # --- Text/document detection (local OCR via tesseract) ---
   # Images with at least this many recognizable words get flagged as likely
   # low-sentimental-value "document photos": photographed book/recipe pages,
